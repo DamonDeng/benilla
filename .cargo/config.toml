@@ -3,3 +3,5 @@
 # `release`). Env vars still prefix it: `WOW_USER=<account> WOW_PASS=<password> cargo play`.
 [alias]
 play = "run --profile play -p benilla"
+# `cargo explore`: Azeroth Explorer, the open world server-less, on the same profile.
+explore = "run --profile play -p warcraft-explorer"

@@ -55,6 +55,9 @@ mod dev;
 mod devtools;
 mod doodad_events;
 mod entities;
+/// Explore mode: the open world on the full player controller, server-less; the
+/// `warcraft-explorer` launcher boots it.
+mod explore;
 mod field_callbacks;
 mod field_watch;
 mod fishing_line;
@@ -224,6 +227,13 @@ pub fn run_with(build: BuildId, extend: impl FnOnce(&mut App)) -> AppExit {
     launch(build, Some(Box::new(extend)))
 }
 
+/// Explore mode: the client booted server-less into the open world on the full player controller
+/// ([`explore`]), called by the `warcraft-explorer` launcher.
+pub fn run_explore(build: BuildId) -> AppExit {
+    explore::ACTIVE.store(true, std::sync::atomic::Ordering::Relaxed);
+    launch(build, None)
+}
+
 /// The state folder, `benilla-config/`, where a crate on top keeps its own files: an addon it ships
 /// goes in its `AddOns/`, where benilla finds addons and their art and fonts. `None` when
 /// persistence is off (a capture run, or no executable path), and it may not exist yet. A dev
@@ -331,6 +341,12 @@ fn launch(build: BuildId, extend: Option<Extension<'_>>) -> AppExit {
     // With `$WOW_CAPTURE` set the app runs a deterministic, server-less capture (net off, so no
     // NPCs stream in) and exits.
     let capturing = run_mode::scenario_active();
+    // Explore runs server-less on the spawn's map, seated as `$WOW_MAP` for the `Startup` read
+    // in `benilla_world::world_map`; an explicit `$WOW_MAP` wins.
+    let explore = explore::active();
+    if explore && std::env::var_os("WOW_MAP").is_none() {
+        std::env::set_var("WOW_MAP", explore::start_map().to_string());
+    }
     // Every instrumented run, captures and live probes, opens in the background so it never takes
     // over a person's screen; `WOW_BG` overrides.
     let background = benilla_world::bgwin::background_run();
@@ -361,7 +377,7 @@ fn launch(build: BuildId, extend: Option<Extension<'_>>) -> AppExit {
     // (`embedded://benilla_app/shaders/…`), so no build-machine path reaches the binary.
 
     app.add_plugins(benilla_world::boot::tuned_default_plugins(Window {
-        title: "benilla".into(),
+        title: if explore { "Azeroth Explorer" } else { "benilla" }.into(),
         // Born in the player's display mode (`gxWindow` read straight off `config.toml`) rather
         // than flipped into it at `Startup`, which would flash on every launch and, under
         // gamescope, spend the first second in the input state fullscreen is meant to end.
@@ -450,9 +466,16 @@ fn launch(build: BuildId, extend: Option<Extension<'_>>) -> AppExit {
     // The game as one group on top of the engine; `game_plugins.rs` has its members, its
     // load-bearing ordering edges and the test that builds it headless.
     .add_plugins(game_plugins::GamePlugins {
-        connect: !capturing,
-        start: run_mode::start_state(),
+        connect: !capturing && !explore,
+        start: if explore {
+            client_state::ClientState::InWorld
+        } else {
+            run_mode::start_state()
+        },
     });
+    if explore {
+        app.add_plugins(explore::ExplorePlugin);
+    }
 
     // benilla-assets' loaders go into the live `AssetServer`, so they register after `AssetPlugin`.
     benilla_assets::register_asset_loaders(&mut app);

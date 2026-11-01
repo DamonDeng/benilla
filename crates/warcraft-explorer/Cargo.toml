@@ -1,0 +1,24 @@
+[package]
+name = "warcraft-explorer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Azeroth Explorer: the benilla client booted server-less into the open world on the full player controller"
+
+[lints]
+workspace = true
+
+[features]
+default = ["dev"]
+dev = ["benilla-app/dev"]
+
+[dependencies]
+benilla-app = { path = "../benilla-app", default-features = false }
+
+[build-dependencies]
+benilla-buildstamp = { path = "../benilla-buildstamp" }
+
+[[bin]]
+name = "warcraft-explorer"
+path = "src/main.rs"
+test = false

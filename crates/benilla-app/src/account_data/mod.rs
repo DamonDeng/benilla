@@ -85,6 +85,26 @@ impl AccountData {
         self.lock().pending[section]
     }
 
+    /// A server-less world entry's stand-in for the server's digests ([`crate::explore`]): the
+    /// entry reset leaves every section pending for `SMSG_ACCOUNT_DATA_TIMES`, which never comes
+    /// off-line, so each reader (the chat cache, the bindings, the macros, the layout) would wait
+    /// forever. This settles each still-pending section against its local file alone — no upload,
+    /// no request, as [`State::reconcile`] does for a section with no server transfer — and owes a
+    /// registered reader its run. Idempotent: a settled section is skipped, so a reader is owed at
+    /// most once per entry; `identity` seats the per-character sections' files.
+    pub(crate) fn settle_offline(&self, identity: Option<Identity>) {
+        let mut state = self.lock();
+        if state.identity.is_none() {
+            state.identity = identity;
+        }
+        for s in 0..ACCOUNT_DATA_SECTIONS {
+            if state.pending[s] {
+                state.pending[s] = false;
+                state.settle(s);
+            }
+        }
+    }
+
     /// Whether section `section` settled since its reader was held or last ran: the reader takes
     /// it and runs.
     pub(crate) fn take_owed(&self, section: usize) -> bool {
