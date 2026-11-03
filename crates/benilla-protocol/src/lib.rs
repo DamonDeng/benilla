@@ -5,6 +5,7 @@ pub mod auth;
 pub mod events;
 pub mod guid;
 pub mod messages;
+pub mod transport;
 pub mod wire;
 pub mod world;
 pub use auth::{AuthReject, LogonReply};
@@ -13,6 +14,7 @@ pub use events::{
     RealmListEmptied, RosterCause, SessionEnd, SessionEvent, SessionEventKind, TransportClock,
 };
 pub use messages::field;
+pub use transport::{Leg, Transport, TunnelConfig, WsTunnelTransport};
 pub use messages::{
     AttackSwingError, CharCreateReq, CharEnumItem, Character, CorpseLook, CreateSpline, ItemInfo,
     JumpInfo, MonsterMoveFacing, MoveMode, MoverState, ObjectFields, OwnerFallback, RelayVerb,

@@ -18,6 +18,9 @@ rand = "0.8.6"
 sha1.workspace = true
 # Derives `SessionEventKind`, `SessionEvent`'s fieldless twin that the handler table keys on.
 strum = { version = "0.26", features = ["derive"] }
+# Optional `wss` tunnel transport (src/transport.rs): sync WebSocket client over rustls, so the
+# client/bots can reach a server exposed only through our 443 bridge. rustls roots = no OpenSSL.
+tungstenite = { version = "0.21", features = ["rustls-tls-webpki-roots"] }
 
 # The logon challenge's time-zone bias on unix, `localtime_r`'s.
 [target.'cfg(unix)'.dependencies]

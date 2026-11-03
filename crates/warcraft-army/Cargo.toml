@@ -1,0 +1,20 @@
+[package]
+name = "warcraft-army"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Army management: headless benilla-protocol bot sessions on a 1.12.1 server, toward agentic teammates"
+
+[lints]
+workspace = true
+
+[dependencies]
+benilla-protocol = { path = "../benilla-protocol" }
+benilla-formats = { path = "../benilla-formats" }
+anyhow.workspace = true
+eframe = "0.29.1"
+
+[[bin]]
+name = "warcraft-army"
+path = "src/main.rs"
+test = false
