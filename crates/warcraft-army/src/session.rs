@@ -14,7 +14,9 @@ use benilla_protocol::messages::{
     Character, CharCreateReq, CHAR_CREATE_NAME_IN_USE, CHAR_CREATE_SERVER_LIMIT,
     CHAR_CREATE_SUCCESS,
 };
-use benilla_protocol::{auth, decode, logon, SessionEvent, WorldSession, WORLD_PORT};
+use benilla_protocol::{
+    auth, decode, logon, logon_tunneled, SessionEvent, TunnelConfig, WorldSession, WORLD_PORT,
+};
 
 /// How long [`Session::leave`] waits for `SMSG_LOGOUT_COMPLETE`. Logging out in the open field runs
 /// the 20 s camp timer (instant only in cities/inns), so this must exceed it.
@@ -94,23 +96,30 @@ impl Session {
     /// Authenticate against realmd, connect to the realm's world server, and read the roster.
     /// Leaves the session parked at character select (as the glue screens are).
     pub fn login(acct: &Account) -> Result<Self> {
-        let l = logon(
-            &acct.realmlist,
-            &acct.user,
-            &acct.pass,
-            auth::LOCALE_TAG_EN_US,
-        )
+        // Optional wss-tunnel mode: when `ARMY_TUNNEL_CONFIG` names a tunnel TOML, both the realm
+        // and world legs ride the bridge; otherwise it's a direct TCP connect to the realmlist
+        // (the unchanged default).
+        let tunnel = tunnel_config();
+
+        let l = match tunnel.as_ref() {
+            Some(cfg) => logon_tunneled(cfg, &acct.user, &acct.pass, auth::LOCALE_TAG_EN_US),
+            None => logon(&acct.realmlist, &acct.user, &acct.pass, auth::LOCALE_TAG_EN_US),
+        }
         .with_context(|| format!("realmd logon for {}", acct.user))?;
 
-        // The realm's own world address, or the realmd host with the default world port.
-        let addr = l
-            .realms
-            .first()
-            .map(|r| r.address.clone())
-            .unwrap_or_else(|| format!("{}:{WORLD_PORT}", host_of(&acct.realmlist)));
-
-        let mut inner = WorldSession::connect(&addr, &acct.user, l.session_key)
-            .with_context(|| format!("world connect for {}", acct.user))?;
+        let mut inner = match tunnel.as_ref() {
+            Some(cfg) => WorldSession::connect_tunneled(cfg, &acct.user, l.session_key),
+            None => {
+                // The realm's own world address, or the realmd host with the default world port.
+                let addr = l
+                    .realms
+                    .first()
+                    .map(|r| r.address.clone())
+                    .unwrap_or_else(|| format!("{}:{WORLD_PORT}", host_of(&acct.realmlist)));
+                WorldSession::connect(&addr, &acct.user, l.session_key)
+            }
+        }
+        .with_context(|| format!("world connect for {}", acct.user))?;
 
         let roster = inner
             .char_enum()
@@ -215,6 +224,46 @@ impl Session {
 /// The host part of a `host[:port]` string (an IPv6 literal in brackets is returned whole).
 fn host_of(realmlist: &str) -> &str {
     benilla_protocol::host_port(realmlist, WORLD_PORT).0
+}
+
+/// The optional `wss`-tunnel config, from the file named by `ARMY_TUNNEL_CONFIG`, or `None` for the
+/// default direct-TCP connect. The file is a tiny TOML — `endpoint = "wss://…"`,
+/// `base_path = "/…"`, `key = "…"` — parsed by hand to avoid a TOML dependency in the army. The
+/// `key` is a SECRET bearer token; keep the file out of the repo (see `env_info/`).
+fn tunnel_config() -> Option<TunnelConfig> {
+    let path = std::env::var("ARMY_TUNNEL_CONFIG").ok()?;
+    let text = match std::fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("army: cannot read ARMY_TUNNEL_CONFIG {path}: {e}; using direct TCP");
+            return None;
+        }
+    };
+    let (mut endpoint, mut base_path, mut key) = (String::new(), String::new(), String::new());
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if let Some((k, v)) = line.split_once('=') {
+            let v = v.trim().trim_matches('"').to_string();
+            match k.trim() {
+                "endpoint" => endpoint = v,
+                "base_path" => base_path = v,
+                "key" => key = v,
+                _ => {}
+            }
+        }
+    }
+    if endpoint.is_empty() || key.is_empty() {
+        eprintln!("army: ARMY_TUNNEL_CONFIG is missing endpoint or key; using direct TCP");
+        return None;
+    }
+    Some(TunnelConfig {
+        endpoint,
+        base_path,
+        key,
+    })
 }
 
 /// `ChrRaces.dbc` id → name, for display.

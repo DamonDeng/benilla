@@ -1,4 +1,3 @@
-use std::net::TcpStream;
 use std::sync::Arc;
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -6,6 +5,7 @@ use benilla_srp::vanilla_header::{HeaderCrypto, ProofSeed};
 use benilla_srp::{NormalizedString, SESSION_KEY_LENGTH};
 
 use crate::messages::{self, opcode, Character, MoveMode, ServerPacket};
+use crate::transport::{Leg, Transport, TunnelConfig};
 
 use super::movement::{client_uptime_ms, movement_info, MOVEMENT_FLAG_FORWARD};
 use super::reader::WorldReader;
@@ -45,7 +45,7 @@ impl std::error::Error for WorldAuthReject {}
 
 /// An authenticated world-server session with 1.12 header obfuscation active.
 pub struct WorldSession {
-    stream: TcpStream,
+    stream: Transport,
     crypto: HeaderCrypto,
     link: LinkFacts,
     /// The bytes this connection carried, shared with both halves of a split.
@@ -108,8 +108,37 @@ impl WorldSession {
         session_key: [u8; SESSION_KEY_LENGTH],
         on_event: &mut dyn FnMut(WorldConnectEvent) -> bool,
     ) -> Result<Self> {
+        Self::connect_queued_impl(address, username, session_key, on_event, None)
+    }
+
+    /// [`Self::connect`] over the `wss` bridge tunnel (the world leg, `…/<base>/world`) instead of a
+    /// direct socket to the realm's advertised world address. The bridge relays to `mangosd`.
+    pub fn connect_tunneled(
+        cfg: &TunnelConfig,
+        username: &str,
+        session_key: [u8; SESSION_KEY_LENGTH],
+    ) -> Result<Self> {
+        Self::connect_queued_impl("", username, session_key, &mut |_| true, Some(cfg))
+    }
+
+    /// The shared world-connect body: a direct socket when `tunnel` is `None` (the default), or the
+    /// `wss` bridge tunnel when `Some`.
+    fn connect_queued_impl(
+        address: &str,
+        username: &str,
+        session_key: [u8; SESSION_KEY_LENGTH],
+        on_event: &mut dyn FnMut(WorldConnectEvent) -> bool,
+        tunnel: Option<&TunnelConfig>,
+    ) -> Result<Self> {
         let mut queued = false;
-        let mut stream = crate::dial_world(address).context("connecting to world server")?;
+        let mut stream: Transport = match tunnel {
+            Some(cfg) => {
+                Transport::connect_tunnel(cfg, Leg::World).context("connecting world tunnel")?
+            }
+            None => {
+                Transport::Tcp(crate::dial_world(address).context("connecting to world server")?)
+            }
+        };
         // The connect hook's reset (`0x537b90`): the counts start at zero and the clock now.
         let traffic = Arc::new(LinkTraffic::new());
         if !on_event(WorldConnectEvent::Connected) {
@@ -888,8 +917,17 @@ impl WorldSession {
         self.stream
             .set_read_timeout(None)
             .context("clearing handshake read timeout")?;
-        let read_stream = self
-            .stream
+        // The split needs two independent sockets, made by cloning the fd — only possible on a
+        // direct TCP connection. A tunnelled session carries a single WebSocket that can't be
+        // cloned, so it is never split; the caller (e.g. the bot army) drives the session's own
+        // recv/send instead.
+        let write_stream = match self.stream {
+            Transport::Tcp(s) => s,
+            Transport::Ws(_) => {
+                bail!("a WebSocket-tunnelled world session cannot be split into read/write halves")
+            }
+        };
+        let read_stream = write_stream
             .try_clone()
             .context("cloning world socket for split")?;
         let (encrypter, decrypter) = self.crypto.split();
@@ -901,7 +939,7 @@ impl WorldSession {
                 traffic: Arc::clone(&self.traffic),
             },
             WorldWriter {
-                stream: self.stream,
+                stream: write_stream,
                 encrypter,
                 chat_language: self.chat_language,
                 traffic: self.traffic,
@@ -920,7 +958,7 @@ impl WorldSession {
             decrypter, link, ..
         } = reader;
         let session = WorldSession {
-            stream: writer.stream,
+            stream: Transport::Tcp(writer.stream),
             crypto: HeaderCrypto::join(writer.encrypter, decrypter),
             link,
             traffic: writer.traffic,

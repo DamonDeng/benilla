@@ -257,7 +257,7 @@ pub struct Logon {
     /// empty and the link still up.
     pub realms_refused: bool,
     /// `None` once the link has failed a refresh; the held list is then final.
-    stream: Option<TcpStream>,
+    stream: Option<Transport>,
     /// The PIN's digits, when the account asked for one: what the keys pressed showed.
     pin: Option<Vec<u8>>,
     /// The challenge asked for a PIN.
@@ -362,12 +362,54 @@ pub fn logon_with_pin(
     pin: &mut dyn FnMut(&[u8; 10]) -> Result<Vec<u8>>,
     stage: &mut dyn FnMut(LoginStage),
 ) -> Result<Logon> {
+    logon_with_pin_impl(realmlist, username, password, locale, pin, stage, None)
+}
+
+/// [`logon`] carried over the `wss` bridge tunnel instead of a direct `realmd` socket (see
+/// [`TunnelConfig`]). The SRP6 realm leg rides `…/<base>/realm`; the later world connect uses
+/// [`WorldSession::connect_tunneled`]. A PIN cannot be entered this way.
+pub fn logon_tunneled(
+    cfg: &TunnelConfig,
+    username: &str,
+    password: &str,
+    locale: u32,
+) -> Result<Logon> {
+    logon_with_pin_impl(
+        "",
+        username,
+        password,
+        locale,
+        &mut |_| {
+            Err(anyhow!(
+                "the account asks for a PIN, which a tunnelled logon cannot enter"
+            ))
+        },
+        &mut |_| {},
+        Some(cfg),
+    )
+}
+
+/// The shared logon body: a direct `realmd` socket when `tunnel` is `None` (the default,
+/// byte-for-byte the prior behaviour), or the `wss` bridge tunnel when `Some`.
+fn logon_with_pin_impl(
+    realmlist: &str,
+    username: &str,
+    password: &str,
+    locale: u32,
+    pin: &mut dyn FnMut(&[u8; 10]) -> Result<Vec<u8>>,
+    stage: &mut dyn FnMut(LoginStage),
+    tunnel: Option<&TunnelConfig>,
+) -> Result<Logon> {
     let username_n =
         NormalizedString::new(username).map_err(|e| anyhow!("invalid username: {e}"))?;
     let password_n =
         NormalizedString::new(password).map_err(|e| anyhow!("invalid password: {e}"))?;
     // One draw per login, as the reference dials once: the redials below go to the same address.
-    let (target, address) = logon_target(realmlist)?;
+    // Only the direct path dials a realmd address; the tunnel dials the bridge endpoint instead.
+    let tcp_dial = match tunnel {
+        Some(_) => None,
+        None => Some(logon_target(realmlist)?),
+    };
 
     // The account name goes uppercased, as SRP6 hashes it. About one `B` in 137 serializes
     // differently in the client and mangos (a right password gets 0x04), so redial for a fresh
@@ -375,7 +417,15 @@ pub fn logon_with_pin(
     let (mut stream, reply, server_public_key) = {
         let mut dialed = None;
         for dial in 0..MAX_CHALLENGE_DIALS {
-            let mut stream = connect(target, &address)?;
+            let mut stream: Transport = match tunnel {
+                Some(cfg) => Transport::connect_tunnel(cfg, Leg::Realm)
+                    .context("opening the realm tunnel")?,
+                None => {
+                    let (target, address) =
+                        tcp_dial.as_ref().expect("tcp dial present when not tunnelling");
+                    Transport::Tcp(connect(*target, address)?)
+                }
+            };
             if dial == 0 {
                 stage(LoginStage::Authenticating);
             }
@@ -455,7 +505,7 @@ pub fn logon_with_pin(
 
 /// An authenticated logon's tail: the realm list over the same socket.
 fn finish_logon(
-    mut stream: TcpStream,
+    mut stream: Transport,
     session_key: [u8; SESSION_KEY_LENGTH],
     pin: Option<Vec<u8>>,
     pin_asked: bool,

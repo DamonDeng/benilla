@@ -1,0 +1,14 @@
+# Army wss-tunnel config (EXAMPLE — placeholders only; never commit a real key).
+#
+# Copy to a PRIVATE location (e.g. wow_space/env_info/army-tunnel.toml) and point the army at it:
+#   ARMY_TUNNEL_CONFIG=/path/to/army-tunnel.toml cargo run -p warcraft-army
+#
+# When ARMY_TUNNEL_CONFIG is set, every bot session reaches the server through the wss bridge on
+# 443 (realm + world legs) instead of a direct TCP connect. Leave it unset for local/direct play.
+#
+# The key is a SECRET bearer token the bridge checks on the handshake — paste one of the keys from
+# wow_space/env_info/tunnel-keys.md (e.g. a backup key for the bots).
+
+endpoint  = "wss://wow.agentnumber47.com"
+base_path = "/<special_url>"
+key       = "<paste a key from env_info/tunnel-keys.md>"

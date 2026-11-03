@@ -152,6 +152,19 @@ impl WsTunnelTransport {
     pub fn set_read_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
         self.sock.set_read_timeout(timeout)
     }
+
+    /// Put the underlying socket in (non-)blocking mode, for a non-blocking liveness peek.
+    pub fn set_nonblocking(&self, nonblocking: bool) -> io::Result<()> {
+        self.sock.set_nonblocking(nonblocking)
+    }
+
+    /// Peek bytes pending on the underlying socket without consuming them. These are **raw**
+    /// transport bytes (TLS/WebSocket framing), not the decoded WoW stream, so this is a liveness
+    /// signal only: `Ok(0)` = the link closed, `Ok(n)` = something is pending, a `WouldBlock`
+    /// error = quiet. A caller that then reads expects whole ws frames to follow promptly.
+    pub fn peek(&self, buf: &mut [u8]) -> io::Result<usize> {
+        self.sock.peek(buf)
+    }
 }
 
 impl Read for WsTunnelTransport {
@@ -255,6 +268,23 @@ impl Transport {
                 io::ErrorKind::Unsupported,
                 "a WebSocket tunnel cannot be split with try_clone",
             )),
+        }
+    }
+
+    /// Non-blocking mode on the backing socket, for a liveness peek.
+    pub fn set_nonblocking(&self, nonblocking: bool) -> io::Result<()> {
+        match self {
+            Transport::Tcp(s) => s.set_nonblocking(nonblocking),
+            Transport::Ws(w) => w.set_nonblocking(nonblocking),
+        }
+    }
+
+    /// Peek pending bytes without consuming them (a liveness signal only on the tunnel — see
+    /// [`WsTunnelTransport::peek`]).
+    pub fn peek(&self, buf: &mut [u8]) -> io::Result<usize> {
+        match self {
+            Transport::Tcp(s) => s.peek(buf),
+            Transport::Ws(w) => w.peek(buf),
         }
     }
 }
