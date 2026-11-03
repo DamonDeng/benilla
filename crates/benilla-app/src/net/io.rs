@@ -435,15 +435,20 @@ fn query(
                 .and_then(|digits| benilla_protocol::auth::pin::positions(grid, &digits))
                 .ok_or_else(|| anyhow!("the re-dial has no PIN to press"))
         };
-        // A hidden re-dial for the realm list: no logon on the screen to tell the states to.
-        match benilla_protocol::logon_with_pin(
-            &req.host,
-            &req.user,
-            &req.pass,
-            req.locale,
-            &mut press,
-            &mut |_| {},
-        ) {
+        // A hidden re-dial for the realm list: no logon on the screen to tell the states to. Over
+        // the tunnel this re-dials the bridge's realm leg (no PIN keypad on a tunnelled logon).
+        let redial = match benilla_protocol::TunnelConfig::from_env() {
+            Some(cfg) => benilla_protocol::logon_tunneled(&cfg, &req.user, &req.pass, req.locale),
+            None => benilla_protocol::logon_with_pin(
+                &req.host,
+                &req.user,
+                &req.pass,
+                req.locale,
+                &mut press,
+                &mut |_| {},
+            ),
+        };
+        match redial {
             Ok(fresh) => {
                 *logon = fresh;
                 ok = !logon.realms_refused;
@@ -630,23 +635,28 @@ fn run(
         // challenge asks for a PIN.
         stage(LoginStage::Connecting);
         let mut superseded = None;
-        let logon = benilla_protocol::logon_with_pin(
-            &req.host,
-            &req.user,
-            &req.pass,
-            req.locale,
-            &mut |grid| {
-                let prompt = PIN_PROMPTS.fetch_add(1, Ordering::SeqCst) + 1;
-                stage(LoginStage::Pin {
-                    grid: *grid,
-                    prompt,
-                });
-                let (answer, next) = keypad(parks, prompt, &canceled);
-                superseded = next;
-                answer
-            },
-            &mut |s| stage(s),
-        );
+        // Over the tunnel, logon is a `wss` connection to the bridge's realm leg; it carries no PIN
+        // keypad (a tunnelled logon cannot press one). Otherwise the direct realmd dial, unchanged.
+        let logon = match benilla_protocol::TunnelConfig::from_env() {
+            Some(cfg) => benilla_protocol::logon_tunneled(&cfg, &req.user, &req.pass, req.locale),
+            None => benilla_protocol::logon_with_pin(
+                &req.host,
+                &req.user,
+                &req.pass,
+                req.locale,
+                &mut |grid| {
+                    let prompt = PIN_PROMPTS.fetch_add(1, Ordering::SeqCst) + 1;
+                    stage(LoginStage::Pin {
+                        grid: *grid,
+                        prompt,
+                    });
+                    let (answer, next) = keypad(parks, prompt, &canceled);
+                    superseded = next;
+                    answer
+                },
+                &mut |s| stage(s),
+            ),
+        };
         if let Some(next) = superseded {
             req = next;
             continue 'logon;
@@ -805,12 +815,23 @@ fn world(
             }
             !canceled()
         };
-        let mut session = match WorldSession::connect_queued(
-            &world_addr,
-            &req.user,
-            logon.session_key,
-            &mut on_queue,
-        ) {
+        // Over the tunnel the world leg is a `wss` connection to the bridge; otherwise a direct
+        // dial to the realm's address. The queue/cancel callback is preserved either way.
+        let connect_result = match benilla_protocol::TunnelConfig::from_env() {
+            Some(cfg) => WorldSession::connect_queued_tunneled(
+                &cfg,
+                &req.user,
+                logon.session_key,
+                &mut on_queue,
+            ),
+            None => WorldSession::connect_queued(
+                &world_addr,
+                &req.user,
+                logon.session_key,
+                &mut on_queue,
+            ),
+        };
+        let mut session = match connect_result {
             Ok(s) => s,
             Err(e) => {
                 if canceled() {

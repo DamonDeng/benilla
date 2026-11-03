@@ -121,6 +121,17 @@ impl WorldSession {
         Self::connect_queued_impl("", username, session_key, &mut |_| true, Some(cfg))
     }
 
+    /// Like [`Self::connect_queued`] but over the `wss` tunnel, keeping the queue/cancel callback
+    /// (so the GUI client still shows "connecting"/queued and can abandon the dial).
+    pub fn connect_queued_tunneled(
+        cfg: &TunnelConfig,
+        username: &str,
+        session_key: [u8; SESSION_KEY_LENGTH],
+        on_event: &mut dyn FnMut(WorldConnectEvent) -> bool,
+    ) -> Result<Self> {
+        Self::connect_queued_impl("", username, session_key, on_event, Some(cfg))
+    }
+
     /// The shared world-connect body: a direct socket when `tunnel` is `None` (the default), or the
     /// `wss` bridge tunnel when `Some`.
     fn connect_queued_impl(
@@ -911,25 +922,18 @@ impl WorldSession {
         self.send(opcode::CMSG_LOOT_RELEASE, &messages::loot_release(guid))
     }
 
-    /// Split into a reader and a writer on cloned sockets, after [`Self::player_login`].
+    /// Split into a reader and a writer, after [`Self::player_login`]. A direct session splits on a
+    /// cloned socket; a `wss`-tunnelled session splits via an owning worker thread that bridges the
+    /// single WebSocket to the two halves over channels (see [`crate::transport`]).
     pub fn into_split(self) -> Result<(WorldReader, WorldWriter)> {
         // A quiet world is legal, so streaming reads block without a timeout.
         self.stream
             .set_read_timeout(None)
             .context("clearing handshake read timeout")?;
-        // The split needs two independent sockets, made by cloning the fd — only possible on a
-        // direct TCP connection. A tunnelled session carries a single WebSocket that can't be
-        // cloned, so it is never split; the caller (e.g. the bot army) drives the session's own
-        // recv/send instead.
-        let write_stream = match self.stream {
-            Transport::Tcp(s) => s,
-            Transport::Ws(_) => {
-                bail!("a WebSocket-tunnelled world session cannot be split into read/write halves")
-            }
-        };
-        let read_stream = write_stream
-            .try_clone()
-            .context("cloning world socket for split")?;
+        let (read_stream, write_stream) = self
+            .stream
+            .split_io()
+            .context("splitting the world connection into read/write halves")?;
         let (encrypter, decrypter) = self.crypto.split();
         Ok((
             WorldReader {
@@ -953,12 +957,19 @@ impl WorldSession {
     /// no new authentication. The cipher keeps the state each direction reached, and the reads
     /// wait with the handshake's bound again, as every park step awaits one reply.
     pub fn rejoin(reader: WorldReader, writer: WorldWriter) -> Result<Self> {
-        // The read half is a clone of the write half's socket; dropping it closes nothing.
+        // Drop the read half first (for a tunnel, this lets its worker wind down); the direct read
+        // half is a clone of the write half's socket, so dropping it closes nothing.
         let WorldReader {
             decrypter, link, ..
         } = reader;
+        // Reclaim the connection from the write half: the direct socket as-is, or the tunnel
+        // transport after its worker is stopped and handed back.
+        let stream = writer
+            .stream
+            .into_transport()
+            .context("reclaiming the world connection for rejoin")?;
         let session = WorldSession {
-            stream: Transport::Tcp(writer.stream),
+            stream,
             crypto: HeaderCrypto::join(writer.encrypter, decrypter),
             link,
             traffic: writer.traffic,

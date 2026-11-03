@@ -1,7 +1,7 @@
-use std::net::TcpStream;
-
 use anyhow::{anyhow, Result};
 use benilla_srp::vanilla_header::DecrypterHalf;
+
+use crate::transport::ReadHalf;
 
 use crate::messages::{self, ServerPacket};
 
@@ -11,7 +11,7 @@ use super::{read_frame, recv_packet};
 /// and what the connection learned before the split, for
 /// [`WorldSession::rejoin`](super::WorldSession::rejoin).
 pub struct WorldReader {
-    pub(super) stream: TcpStream,
+    pub(super) stream: ReadHalf,
     pub(super) decrypter: DecrypterHalf,
     pub(super) link: super::session::LinkFacts,
     pub(super) traffic: std::sync::Arc<super::LinkTraffic>,

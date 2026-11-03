@@ -20,6 +20,9 @@
 
 use std::io::{self, Read, Write};
 use std::net::TcpStream;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Arc};
+use std::thread;
 use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
@@ -317,5 +320,218 @@ fn to_io(e: tungstenite::Error) -> io::Error {
     match e {
         tungstenite::Error::Io(io) => io,
         other => io::Error::new(io::ErrorKind::Other, other),
+    }
+}
+
+// ============================================================================
+// Read/write split for the two transports.
+//
+// `WorldSession::into_split` needs an independent read half and write half. For `Tcp` that is a
+// cloned socket (as before). A single WebSocket can't be cloned (stateful framing), so the `Ws`
+// split runs one OWNING worker thread that holds the `WsTunnelTransport` and bridges to the halves
+// over channels: the writer enqueues outbound bytes, the reader pulls inbound bytes, and the worker
+// interleaves ws reads and writes on that one thread — so neither starves the other (a single mutex
+// around the ws would deadlock a blocked reader against the writer). `rejoin` stops the worker and
+// reclaims the `WsTunnelTransport`, so the session continues on the very same connection.
+// ============================================================================
+
+/// How long the worker blocks on a read before it loops back to service outbound writes.
+const WS_WORKER_POLL: Duration = Duration::from_millis(25);
+
+/// The read half of a tunnelled session: inbound bytes the worker pulled off the WebSocket,
+/// delivered over a channel and buffered so a `read` smaller than a chunk is satisfied across
+/// calls. It blocks (the streaming reader wants a quiet world to block, exactly like a
+/// timeout-free `TcpStream`); `Ok(0)` means the worker/link ended (EOF).
+pub struct WsReadHalf {
+    rx: mpsc::Receiver<Vec<u8>>,
+    buf: Vec<u8>,
+    pos: usize,
+}
+
+impl Read for WsReadHalf {
+    fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+        if self.pos >= self.buf.len() {
+            match self.rx.recv() {
+                Ok(chunk) => {
+                    self.buf = chunk;
+                    self.pos = 0;
+                }
+                Err(_) => return Ok(0), // worker gone → EOF, like a half-closed TCP read
+            }
+        }
+        let n = out.len().min(self.buf.len() - self.pos);
+        out[..n].copy_from_slice(&self.buf[self.pos..self.pos + n]);
+        self.pos += n;
+        if self.pos >= self.buf.len() {
+            self.buf.clear();
+            self.pos = 0;
+        }
+        Ok(n)
+    }
+}
+
+/// The write half of a tunnelled session: outbound bytes handed to the worker, which frames and
+/// sends them on the WebSocket. Also owns the handle to stop the worker and reclaim the transport.
+pub struct WsWriteHalf {
+    tx: mpsc::Sender<Vec<u8>>,
+    stop: Arc<AtomicBool>,
+    reclaim: mpsc::Receiver<WsTunnelTransport>,
+    join: Option<thread::JoinHandle<()>>,
+}
+
+impl Write for WsWriteHalf {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.tx
+            .send(buf.to_vec())
+            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "tunnel worker gone"))?;
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(()) // the worker flushes after draining each batch
+    }
+}
+
+impl WsWriteHalf {
+    /// Stop the worker and take the `WsTunnelTransport` back, for `rejoin` on the same connection.
+    fn reclaim(mut self) -> io::Result<WsTunnelTransport> {
+        self.stop.store(true, Ordering::SeqCst);
+        let wst = self.reclaim.recv().map_err(|_| {
+            io::Error::new(io::ErrorKind::Other, "tunnel worker did not return the transport")
+        })?;
+        if let Some(join) = self.join.take() {
+            let _ = join.join();
+        }
+        Ok(wst)
+    }
+}
+
+/// Spawn the owning worker and return the two channel-backed halves.
+fn spawn_ws_split(mut wst: WsTunnelTransport) -> (WsReadHalf, WsWriteHalf) {
+    let (out_tx, out_rx) = mpsc::channel::<Vec<u8>>();
+    let (in_tx, in_rx) = mpsc::channel::<Vec<u8>>();
+    let (reclaim_tx, reclaim_rx) = mpsc::channel::<WsTunnelTransport>();
+    let stop = Arc::new(AtomicBool::new(false));
+    let stop_worker = Arc::clone(&stop);
+
+    let join = thread::spawn(move || {
+        // A short read timeout lets this one thread service outbound writes between read attempts.
+        let _ = wst.set_read_timeout(Some(WS_WORKER_POLL));
+        let mut buf = vec![0u8; 16 * 1024];
+        loop {
+            if stop_worker.load(Ordering::SeqCst) {
+                break;
+            }
+            // Outbound first: drain everything queued, so a send waits at most one poll interval.
+            loop {
+                match out_rx.try_recv() {
+                    Ok(bytes) => {
+                        if wst.write_all(&bytes).is_err() {
+                            stop_worker.store(true, Ordering::SeqCst);
+                            break;
+                        }
+                    }
+                    Err(mpsc::TryRecvError::Empty) => break,
+                    Err(mpsc::TryRecvError::Disconnected) => break, // writer dropped without reclaim
+                }
+            }
+            let _ = wst.flush();
+            if stop_worker.load(Ordering::SeqCst) {
+                break;
+            }
+            // Inbound: one read attempt (blocks up to WS_WORKER_POLL, then WouldBlock).
+            match wst.read(&mut buf) {
+                Ok(0) => break, // EOF / close
+                Ok(n) => {
+                    if in_tx.send(buf[..n].to_vec()).is_err() {
+                        break; // reader dropped
+                    }
+                }
+                Err(ref e)
+                    if e.kind() == io::ErrorKind::WouldBlock
+                        || e.kind() == io::ErrorKind::TimedOut => {}
+                Err(_) => break, // socket error
+            }
+        }
+        // Restore blocking before handing the transport back; `rejoin` sets the park timeout.
+        let _ = wst.set_read_timeout(None);
+        let _ = reclaim_tx.send(wst); // std mpsc is unbounded, so this never blocks
+    });
+
+    (
+        WsReadHalf {
+            rx: in_rx,
+            buf: Vec::new(),
+            pos: 0,
+        },
+        WsWriteHalf {
+            tx: out_tx,
+            stop,
+            reclaim: reclaim_rx,
+            join: Some(join),
+        },
+    )
+}
+
+/// The read half of a split session: a cloned direct socket, or the tunnel's channel-backed half.
+pub enum ReadHalf {
+    Tcp(TcpStream),
+    Ws(WsReadHalf),
+}
+
+impl Read for ReadHalf {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        match self {
+            ReadHalf::Tcp(s) => s.read(buf),
+            ReadHalf::Ws(w) => w.read(buf),
+        }
+    }
+}
+
+/// The write half of a split session: a cloned direct socket, or the tunnel's worker-backed half.
+pub enum WriteHalf {
+    Tcp(TcpStream),
+    Ws(WsWriteHalf),
+}
+
+impl Write for WriteHalf {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        match self {
+            WriteHalf::Tcp(s) => s.write(buf),
+            WriteHalf::Ws(w) => w.write(buf),
+        }
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        match self {
+            WriteHalf::Tcp(s) => s.flush(),
+            WriteHalf::Ws(w) => w.flush(),
+        }
+    }
+}
+
+impl Transport {
+    /// Split into independent read/write halves for [`crate::WorldSession::into_split`]: `Tcp`
+    /// clones the socket (unchanged); `Ws` spawns the owning worker.
+    pub(crate) fn split_io(self) -> io::Result<(ReadHalf, WriteHalf)> {
+        match self {
+            Transport::Tcp(s) => {
+                let read = s.try_clone()?;
+                Ok((ReadHalf::Tcp(read), WriteHalf::Tcp(s)))
+            }
+            Transport::Ws(wst) => {
+                let (r, w) = spawn_ws_split(wst);
+                Ok((ReadHalf::Ws(r), WriteHalf::Ws(w)))
+            }
+        }
+    }
+}
+
+impl WriteHalf {
+    /// Reclaim a [`Transport`] for [`crate::WorldSession::rejoin`]: the direct socket as-is, or the
+    /// tunnel transport after stopping its worker.
+    pub(crate) fn into_transport(self) -> io::Result<Transport> {
+        match self {
+            WriteHalf::Tcp(s) => Ok(Transport::Tcp(s)),
+            WriteHalf::Ws(w) => Ok(Transport::Ws(w.reclaim()?)),
+        }
     }
 }

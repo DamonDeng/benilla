@@ -1,12 +1,11 @@
 //! The world session's write half: [`WorldWriter`] and one method per thing the player can do.
 //! Each family module mirrors its namesake in `crate::messages`, which builds the bodies.
 
-use std::net::TcpStream;
-
 use anyhow::Result;
 use benilla_srp::vanilla_header::EncrypterHalf;
 
 use super::send_packet;
+use crate::transport::WriteHalf;
 
 mod account_data;
 mod action_bar;
@@ -61,7 +60,7 @@ mod vendor;
 /// ([`WorldSession::set_active_mover`](super::WorldSession::set_active_mover)). Positions are raw
 /// WoW yards; `orientation` is radians.
 pub struct WorldWriter {
-    pub(super) stream: TcpStream,
+    pub(super) stream: WriteHalf,
     pub(super) encrypter: EncrypterHalf,
     /// The character's faction language, set at login from its race, which a chat send naming no
     /// language carries. vmangos drops the whole message, dot-commands included, when the
