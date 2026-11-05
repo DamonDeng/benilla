@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 
-use crate::Chain;
+use crate::{install_index, Chain, LooseOpen};
 use anyhow::{Context, Result};
 use benilla_dbc::{FieldType, Schema, SchemaField};
 
@@ -103,6 +103,29 @@ impl MapCatalog {
     pub fn with_instance_types(mut self, types: impl IntoIterator<Item = (u32, u32)>) -> Self {
         self.instance_types.extend(types);
         self
+    }
+
+    /// Insert or replace a single map row, for a custom map fetched at runtime and merged on top of
+    /// the shipped `Map.dbc` (online content updates, Phase B — see
+    /// `docs/online-content-updates.md`). Sets `area_table_ids` to 0 so [`has_row`](Self::has_row)
+    /// reports it; a zero `loading_screen` clears any (the map loads with no backdrop).
+    pub fn upsert(
+        &mut self,
+        map_id: u32,
+        directory: &str,
+        name: &str,
+        instance_type: u32,
+        loading_screen: u32,
+    ) {
+        self.dirs.insert(map_id, directory.to_string());
+        self.names.insert(map_id, name.to_string());
+        self.instance_types.insert(map_id, instance_type);
+        self.area_table_ids.entry(map_id).or_insert(0);
+        if loading_screen != 0 {
+            self.loading_screens.insert(map_id, loading_screen);
+        } else {
+            self.loading_screens.remove(&map_id);
+        }
     }
 
     /// The MPQ directory name (`Directory`) for `map_id`, as `MapTiles::load(chain, dir)` takes it.
@@ -204,9 +227,19 @@ fn map_schema() -> Schema {
 
 /// Read Map.dbc off the patch chain into a [`MapCatalog`].
 pub fn load_map_catalog(chain: &mut Chain) -> Result<MapCatalog> {
-    let bytes = chain
-        .read_file(MAP)
-        .with_context(|| format!("reading {MAP}"))?;
+    // Prefer a loose `Map.dbc` (e.g. an overlay's), falling back to the patch chain — so a loose
+    // map override (a custom map's added row) is catalogued, the same way loose assets override the
+    // MPQs. Without an install or a loose copy this resolves to `None` and the chain is used.
+    let bytes = match install_index()
+        .get()
+        .resolve(MAP, LooseOpen::Index)
+        .and_then(|f| f.read())
+    {
+        Some(loose) => loose,
+        None => chain
+            .read_file(MAP)
+            .with_context(|| format!("reading {MAP}"))?,
+    };
     let rs = parse(&bytes, map_schema(), "Map")?;
     let locale = chain.locale();
     let mut dirs = HashMap::with_capacity(rs.records().len());

@@ -32,6 +32,16 @@ pub struct CurrentMap(pub u32);
 #[derive(Message, Clone, Copy)]
 pub struct MapChange;
 
+/// Request a content refresh: re-read `Map.dbc` and rescan the loose index so a map added to the
+/// overlay since startup becomes usable **without a client restart**. Emitted by the terrain
+/// streamer when it meets a map id the catalog does not know (`map_id` is that map, for logging and,
+/// later, a targeted fetch). The foundation of online content updates — see
+/// `docs/online-content-updates.md`.
+#[derive(Message, Clone, Copy)]
+pub struct RefreshContent {
+    pub map_id: u32,
+}
+
 /// The startup set the map catalog loads in, which the streamers' setup runs after.
 #[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct WorldMapLoad;
@@ -41,11 +51,15 @@ pub(crate) struct WorldMapPlugin;
 
 impl Plugin for WorldMapPlugin {
     fn build(&self, app: &mut App) {
-        app.add_message::<MapChange>().add_systems(
-            Startup,
-            load_world_map.after(AssetSet::Open).in_set(WorldMapLoad),
-        );
-        app.add_systems(Update, announce_map_change);
+        app.add_message::<MapChange>()
+            .add_message::<RefreshContent>()
+            .insert_resource(crate::content::ContentOrigin::from_env())
+            .init_resource::<crate::content::FetchedMaps>()
+            .add_systems(
+                Startup,
+                load_world_map.after(AssetSet::Open).in_set(WorldMapLoad),
+            );
+        app.add_systems(Update, (announce_map_change, refresh_content));
     }
 }
 
@@ -84,5 +98,68 @@ fn load_world_map(mut commands: Commands, world_assets: Option<Res<WorldAssets>>
             commands.insert_resource(CurrentMap(map));
         }
         Err(e) => error!("failed to load Map.dbc, cross-map teleport disabled: {e:#}"),
+    }
+}
+
+/// On a [`RefreshContent`] request, rescan the loose index and rebuild [`MapCatalogRes`] from a
+/// re-read `Map.dbc` — so a map added to the overlay since startup is catalogued and streamable
+/// without a client restart. `CurrentMap` is untouched (the server owns it). The runtime half of
+/// Phase A in `docs/online-content-updates.md`.
+fn refresh_content(
+    mut commands: Commands,
+    world_assets: Option<Res<WorldAssets>>,
+    mut requests: MessageReader<RefreshContent>,
+    origin: Res<crate::content::ContentOrigin>,
+    mut fetched: ResMut<crate::content::FetchedMaps>,
+) {
+    let ids: Vec<u32> = requests.read().map(|r| r.map_id).collect();
+    if ids.is_empty() {
+        return;
+    }
+    let Some(world_assets) = world_assets else {
+        return;
+    };
+
+    // Phase B — fetch-on-miss: pull any still-unknown requested map from the content origin into
+    // the overlay before rebuilding. With no origin set, this is a no-op and we behave as Phase A
+    // (re-read whatever is already local).
+    if let (Some(origin_dir), Some(overlay)) = (origin.0.as_ref(), benilla_formats::wow_data()) {
+        for id in ids.iter().copied() {
+            if fetched.0.contains_key(&id) {
+                continue;
+            }
+            match crate::content::fetch_map(origin_dir, id, &overlay) {
+                Ok(row) => {
+                    fetched.0.insert(id, row);
+                }
+                Err(e) => warn!("content fetch: map {id} not available from origin — {e}"),
+            }
+        }
+    }
+
+    // Empty the loose index so the next asset open rescans the overlay (picks up newly-written
+    // files); `LooseFiles::find` re-`get()`s the cell per lookup, so terrain/DBC loads see it.
+    benilla_formats::install_index().clear();
+    let mut chain = world_assets.chain.lock_recover();
+    match load_map_catalog(&mut chain) {
+        Ok(mut c) => {
+            // Merge fetched custom-map rows on top of the shipped `Map.dbc` (no binary patching).
+            for row in fetched.0.values() {
+                c.upsert(
+                    row.map_id,
+                    &row.folder,
+                    &row.map_name,
+                    row.instance_type,
+                    row.loading_screen,
+                );
+            }
+            info!(
+                "content refresh: Map.dbc re-read, {} maps catalogued ({} fetched), loose index rescanned",
+                c.len(),
+                fetched.0.len()
+            );
+            commands.insert_resource(MapCatalogRes(c));
+        }
+        Err(e) => error!("content refresh: failed to reload Map.dbc: {e:#}"),
     }
 }

@@ -62,6 +62,7 @@ mod field_callbacks;
 mod field_watch;
 mod fishing_line;
 mod footprints;
+mod portal_channel;
 mod game_plugins;
 mod glue_session;
 mod go_anim;

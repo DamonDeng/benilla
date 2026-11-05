@@ -394,6 +394,9 @@ pub(crate) struct Dispatch<'w, 's> {
     relations: super::RelationWorld<'w, 's>,
     /// The greeter `0x60c270`, which a live unit's click that neither interacts nor swings calls.
     greeting: MessageWriter<'w, crate::sound::NpcGreetingRequest>,
+    /// Portal transit: a goober click opens a channel (beam + minimum hold) instead of an instant
+    /// use; the channel system filters portals from other goobers.
+    portal: MessageWriter<'w, crate::portal_channel::PortalChannelStart>,
 }
 
 /// What a leg does once its `SetAutoLoot` has applied, the sweep it may run included: the loot or
@@ -871,14 +874,23 @@ impl Dispatch<'_, '_> {
                 self.walk_to_object(entity, guid, go_type, walk);
             }
             GoAction::Use => {
-                debug!("right-click gameobject use: {guid:#x}");
-                if benilla_assets::trace::enabled_for("use") {
-                    benilla_assets::trace::line(
-                        "use",
-                        &format!("SEND CMSG_GAMEOBJ_USE guid={guid:#x}"),
-                    );
+                // A goober that is a portal opens a transit channel (beam + minimum hold) rather
+                // than firing at once; the channel system passes non-portal goobers straight to a
+                // normal use, so only portals get the channel.
+                if go_type == crate::portal_channel::GO_TYPE_GOOBER {
+                    debug!("right-click goober: portal channel check {guid:#x}");
+                    self.portal
+                        .write(crate::portal_channel::PortalChannelStart { go_guid: guid });
+                } else {
+                    debug!("right-click gameobject use: {guid:#x}");
+                    if benilla_assets::trace::enabled_for("use") {
+                        benilla_assets::trace::line(
+                            "use",
+                            &format!("SEND CMSG_GAMEOBJ_USE guid={guid:#x}"),
+                        );
+                    }
+                    let _ = self.seam.net.0.send(ClientCommand::GameObjUse { guid });
                 }
-                let _ = self.seam.net.0.send(ClientCommand::GameObjUse { guid });
             }
             // Both opener arms queue for the one cast path, as the reference reaches `TryCast
             // 0x6e4b60` from the use sender (`0x5f35c0`) like a button press.

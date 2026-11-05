@@ -22,6 +22,7 @@ use crate::creature_anim::CreatureAnimPlugin;
 use crate::cursor::CursorPlugin;
 use crate::entities::EntitiesPlugin;
 use crate::fishing_line::FishingLinePlugin;
+use crate::portal_channel::PortalChannelPlugin;
 use crate::footprints::FootprintsPlugin;
 use crate::loading_screen::LoadingScreenPlugin;
 use crate::net::NetPlugin;
@@ -103,6 +104,7 @@ impl PluginGroup for GamePlugins {
             .add(BowstringPlugin)
             .add(crate::weapon_trail::WeaponTrailPlugin)
             .add(FishingLinePlugin)
+            .add(PortalChannelPlugin)
             .add(QuestMarkersPlugin)
             .add(crate::pipe_warm::plugin)
             .add(EntitiesPlugin)

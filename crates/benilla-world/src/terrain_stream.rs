@@ -21,7 +21,7 @@ use crate::model_render::MaterialCache;
 use crate::schedule::WorldStage;
 use crate::view::WorldCamera;
 use crate::vis_chain::VisChainOnly;
-use crate::world_map::CurrentMap;
+use crate::world_map::{CurrentMap, RefreshContent};
 use benilla_assets::materials::{TerrainExtension, TerrainMaterial};
 use benilla_assets::MapCatalogRes;
 use benilla_assets::RenderConfig;
@@ -619,6 +619,9 @@ fn stream_terrain(
         // `None` only under `WOW_STATIC_GX=0`.
         Option<ResMut<crate::static_gx::StaticGx>>,
     ),
+    // Content hot-load: on an unknown-map miss, ask for a catalog/loose-index refresh (once per map).
+    mut content_miss: MessageWriter<RefreshContent>,
+    mut missed: Local<Option<u32>>,
 ) {
     let (mut welds, mut static_merge, mut staticgx) = batchers;
     let (current_map, map_catalog, view) = location;
@@ -634,6 +637,15 @@ fn stream_terrain(
     let placements = placements.into_inner();
     let map_id = focus.map(current_map.map(|m| m.0));
     let Some(dir) = map_catalog.0.directory(map_id).map(str::to_string) else {
+        // Unknown map: the catalog has no directory for it — a custom map added to the overlay
+        // since startup, not yet catalogued. Ask for a content refresh once (re-read Map.dbc +
+        // rescan the loose index), then idle until it lands. One request per map id avoids
+        // per-frame spam when a map is genuinely absent.
+        if *missed != Some(map_id) {
+            warn!("terrain: map {map_id} not in catalog — requesting content refresh");
+            content_miss.write(RefreshContent { map_id });
+            *missed = Some(map_id);
+        }
         return;
     };
 
@@ -654,7 +666,7 @@ fn stream_terrain(
             &mut activity,
         );
         state.map_dir = Some(dir.clone());
-        state.wdt = Some(asset_server.load(format!("mpq://World/Maps/{dir}/{dir}.wdt")));
+        state.wdt = Some(asset_server.load(format!("mpq-loose://World/Maps/{dir}/{dir}.wdt")));
         state.wdt_ungated = false;
     }
     // A failed WDT falls back to ungated probing, warned once per map, never to no world.
@@ -844,7 +856,7 @@ fn stream_terrain(
             state.tiles.insert(
                 (tx, ty),
                 TileState::requested(
-                    asset_server.load(format!("mpq://World/Maps/{dir}/{dir}_{tx}_{ty}.adt")),
+                    asset_server.load(format!("mpq-loose://World/Maps/{dir}/{dir}_{tx}_{ty}.adt")),
                 ),
             );
         }

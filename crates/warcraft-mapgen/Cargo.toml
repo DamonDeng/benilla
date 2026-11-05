@@ -1,0 +1,12 @@
+[package]
+name = "warcraft-mapgen"
+version = "0.1.0"
+edition = "2021"
+description = "Generate a dead-flat, walkable custom benilla map (ADT + WDT + Map.dbc) from existing art"
+
+[dependencies]
+anyhow = "1"
+benilla-adt = { path = "../benilla-adt" }
+benilla-wdt = { path = "../benilla-wdt" }
+benilla-dbc = { path = "../benilla-dbc" }
+benilla-formats = { path = "../benilla-formats" }

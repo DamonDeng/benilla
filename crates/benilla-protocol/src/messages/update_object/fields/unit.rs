@@ -63,6 +63,22 @@ impl ObjectFields {
     pub fn unit_channel_spell(&self) -> u32 {
         self.get_u32(FIELD_UNIT_CHANNEL_SPELL).unwrap_or(0)
     }
+
+    /// Set the channel spell and the object it is aimed at **locally**, for a client-only
+    /// channelled visual (e.g. a portal transit's cast pose + beam). This is NOT a
+    /// server-authoritative change — nothing is sent on the wire. The channel poll in
+    /// `route_cast_visuals` turns the nonzero spell into the cast-hold anim and the beam, and
+    /// `chain_beam` aims that beam at `object`. Clear it with [`Self::clear_unit_channel`].
+    pub fn set_unit_channel(&mut self, spell_id: u32, object: u64) {
+        self.insert(FIELD_UNIT_CHANNEL_OBJECT, object as u32);
+        self.insert(FIELD_UNIT_CHANNEL_OBJECT + 1, (object >> 32) as u32);
+        self.insert(FIELD_UNIT_CHANNEL_SPELL, spell_id);
+    }
+
+    /// Clear the channel spell (drops the channel's pose and beam); see [`Self::set_unit_channel`].
+    pub fn clear_unit_channel(&mut self) {
+        self.insert(FIELD_UNIT_CHANNEL_SPELL, 0);
+    }
     /// `UNIT_MOD_CAST_SPEED`, the factor `GetCastTime 0x6e3340` scales a cast time by, unit
     /// block `+0x22c` (`0x6e342c`); vmangos keeps it at 1.0 and multiplies in each cast-speed
     /// aura (`Unit.cpp:9926-9945`). `None` when never sent, where the descriptor holds 0.

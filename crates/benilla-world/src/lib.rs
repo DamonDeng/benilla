@@ -110,6 +110,7 @@ pub mod build_id;
 pub mod clouds;
 pub mod clutter;
 pub mod collision;
+pub mod content;
 pub mod decal;
 pub mod dev_state;
 pub mod doodad_anim;

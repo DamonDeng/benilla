@@ -905,6 +905,9 @@ dependencies = [
  "objc2 0.5.2",
  "objc2-app-kit 0.2.2",
  "objc2-foundation 0.2.2",
+ "serde",
+ "serde_json",
+ "sha2",
 ]
 
 [[package]]
@@ -6687,6 +6690,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "sha2"
+version = "0.10.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a7507d819769d01a365ab707794a4084392c824f54a7a6a7862f8c3d0892b283"
+dependencies = [
+ "cfg-if",
+ "cpufeatures 0.2.17",
+ "digest",
+]
+
+[[package]]
 name = "sharded-slab"
 version = "0.1.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7779,6 +7793,17 @@ version = "0.2.0"
 dependencies = [
  "benilla-app",
  "benilla-buildstamp",
+]
+
+[[package]]
+name = "warcraft-mapgen"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "benilla-adt",
+ "benilla-dbc",
+ "benilla-formats",
+ "benilla-wdt",
 ]
 
 [[package]]

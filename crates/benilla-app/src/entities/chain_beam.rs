@@ -139,6 +139,33 @@ fn caster_world_pos(
     }))
 }
 
+/// A non-caster end (`0x6ec780`): the field-9 attachment at the live pose, read the same way the
+/// missile resolver does — but when the target's model carries no such attachment (a GameObject
+/// like a floating portal stone), anchor at the model's exact bounding-box centre: its loaded
+/// model-local [`ModelBound`](super::ModelBound) `Aabb` centre transformed to world, so the beam
+/// terminates on the body from real geometry rather than a guessed height. Falls to the origin only
+/// before the model box resolves. Units normally carry the attachment, so are unaffected.
+fn target_world_pos(
+    node: Entity,
+    tags: [u16; 2],
+    units: &super::missile::AttachPosQuery,
+    joints: &Query<&GlobalTransform>,
+    bounds: &Query<&super::ModelBound>,
+) -> Option<Vec3> {
+    let (base, bones, pose) = units.get(node).ok()?;
+    let marker = bones.zip(pose).and_then(|(b, p)| {
+        let (bone, offset) = tags.into_iter().find_map(|tag| b.points.get(&tag).copied())?;
+        p.posed_point(joints.get(p.joints_root).ok()?, bone, offset)
+    });
+    Some(marker.unwrap_or_else(|| {
+        bounds
+            .get(node)
+            .ok()
+            .map(|b| base.transform_point(Vec3::from(b.0.center)))
+            .unwrap_or_else(|| base.translation())
+    }))
+}
+
 /// The beam's participants (`0x60dad4`–`0x60db19`): the channel object when the kit's spell is the
 /// live channel, it names an object and the hop array holds at most one entry; else the hop array;
 /// else nothing.
@@ -389,6 +416,7 @@ pub(crate) fn simulate_chain_beams(
     units: super::missile::AttachPosQuery,
     joints: Query<&GlobalTransform>,
     heights: Query<&OverheadFallback>,
+    bounds: Query<&super::ModelBound>,
     mut beams: Query<(Entity, &mut ChainBeam)>,
     mut scratch: Local<Vec<Vec3>>,
 ) {
@@ -438,11 +466,11 @@ pub(crate) fn simulate_chain_beams(
             let from = if i == 0 {
                 caster_world_pos(nodes[0], &units, &joints, &heights)
             } else {
-                super::missile::attach_world_pos(nodes[i], dest, &units, &joints)
+                target_world_pos(nodes[i], dest, &units, &joints, &bounds)
             };
             let (Some(from), Some(to)) = (
                 from,
-                super::missile::attach_world_pos(nodes[i + 1], dest, &units, &joints),
+                target_world_pos(nodes[i + 1], dest, &units, &joints, &bounds),
             ) else {
                 bolt.strands.iter_mut().for_each(Vec::clear);
                 continue;
