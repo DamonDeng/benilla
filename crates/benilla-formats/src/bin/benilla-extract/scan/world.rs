@@ -272,6 +272,70 @@ pub fn placescan(
     Ok(())
 }
 
+/// Derive a building's vertical "sink" from the ORIGINAL map data. For every real MODF placement of a
+/// WMO whose path contains `filter`, `sink = terrain_height_at(origin x,y) − origin.z`: the designers
+/// set `origin.z` so the model's floor met the terrain, so this difference is how far below grade the
+/// origin sits — i.e. the amount to bury the model when placing it on flat ground. Scans existing
+/// tiles one at a time (low memory) and resolves each placement from the tile covering its origin.
+pub fn wmosink(
+    chain: &mut Chain,
+    map: &str,
+    center_x: f32,
+    center_y: f32,
+    tile_radius: u32,
+    filter: &str,
+) -> Result<()> {
+    let tiles = benilla_formats::MapTiles::load(chain, map)
+        .with_context(|| format!("loading WDT for {map}"))?;
+    let coords = tiles.existing_in_radius(center_x, center_y, tile_radius);
+    eprintln!("{} existing tile(s) in range", coords.len());
+    let needle = filter.to_ascii_lowercase();
+    let mut resolved: HashSet<u32> = HashSet::new();
+    let mut per_model: BTreeMap<String, Vec<f32>> = BTreeMap::new();
+    for (tx, ty) in coords {
+        let tile = match benilla_formats::load_tile_mesh(chain, map, tx, ty) {
+            Ok(t) => t,
+            Err(e) => {
+                eprintln!("tile {tx},{ty}: {e:#}");
+                continue;
+            }
+        };
+        for w in &tile.wmos {
+            if resolved.contains(&w.unique_id) || !w.model.to_ascii_lowercase().contains(&needle) {
+                continue;
+            }
+            // Height from the tile covering the origin column. This tile lists the WMO, but the
+            // origin may lie in a neighbour — a `None` just defers to that neighbour's own pass.
+            let Some(h) = benilla_formats::terrain_height_at(&tile.chunks, w.position) else {
+                continue;
+            };
+            resolved.insert(w.unique_id);
+            let sink = h - w.position[2];
+            println!(
+                "MODF uid {:>8}  origin.z {:>8.2}  terrain {:>8.2}  sink {:>6.2}  {}",
+                w.unique_id, w.position[2], h, sink, w.model,
+            );
+            per_model
+                .entry(w.model.to_ascii_lowercase())
+                .or_default()
+                .push(sink);
+        }
+    }
+    println!("\n=== per-model sink (over real placements) ===");
+    for (model, mut s) in per_model {
+        s.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let n = s.len();
+        let median = s[n / 2];
+        let mean = s.iter().sum::<f32>() / n as f32;
+        println!(
+            "  {model}\n      n={n}  median {median:+.2}  mean {mean:+.2}  range [{:+.2}, {:+.2}]",
+            s[0],
+            s[n - 1],
+        );
+    }
+    Ok(())
+}
+
 /// Count the placed doodads (MDDF) and WMO set-0 props (MODF → MODS/MODD) in the
 /// `(2·tile_radius+1)²` tiles around a world position, and how much of that content animates.
 pub fn doodadscan(

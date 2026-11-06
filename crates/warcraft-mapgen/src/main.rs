@@ -49,6 +49,13 @@ const BAND_RIM_PERIOD: f32 = 60.0; // ramp-start variation feature size around t
 const RIM_CIRCLE_R: f32 = 50.0; // radius the rim parameter is wrapped onto for seamless ridges
 const SEED: u32 = 0x5EED_1337; // re-roll the whole terrain by changing this
 const IMPASSABLE_ED: f32 = 60.0; // flag a chunk MCNK_IMPASSABLE if its nearest edge_dist is below this
+
+// --- lake: a bowl dug into the floor and filled with still water (MCLQ) ---
+const LAKE_X: f32 = -270.0; // world X of the bowl centre (open area south of the spawn)
+const LAKE_Y: f32 = -380.0; // world Y of the bowl centre
+const LAKE_RADIUS: f32 = 45.0; // bowl radius in yards; terrain dips within this, untouched outside
+const LAKE_DEPTH: f32 = 12.0; // max bed drop below the floor, at the centre
+const LAKE_FILL_Z: f32 = 96.0; // still-water surface Z (below the floor's ~97.5 min, so water sits only in the bowl)
 const RING_INNER_MIN: f32 = 105.0; // containment gate: min terrain height on the ring's inner face
 const NORMAL_EPS: f32 = 2.0; // central-difference step (yards) for per-vertex MCNR normals
 
@@ -57,6 +64,50 @@ const TILE_SIZE: f32 = 533.333_3;
 const CHUNK_SIZE: f32 = TILE_SIZE / 16.0;
 const UNIT_SIZE: f32 = CHUNK_SIZE / 8.0;
 const MAP_OFFSET: f32 = 32.0 * TILE_SIZE;
+
+/// Static scenery baked into the ADT as M2 doodads — REUSED art only, no new models. Each tuple is
+/// (model path, world X, world Y, uniform scale); the doodad sits on the terrain (its Z is
+/// `surface_z` at that world x,y). The basin centre is world (-266.667, -266.667). Add rows here to
+/// drop more scenery — this is pure map content, no engine or server change.
+const DOODADS: &[(&str, f32, f32, f32)] = &[
+    (
+        "World\\Azeroth\\Elwynn\\PassiveDoodads\\Trees\\ElwynnTreeCanopy01.m2",
+        -300.0,
+        -280.0,
+        1.0,
+    ),
+];
+
+/// Static buildings baked into the ADT as WMOs — REUSED art only, no new models. Each tuple is
+/// (WMO root path, world X, world Y, yaw degrees, sink yards). Same "pure map content" story as
+/// DOODADS, but a WMO brings walls, interior and collision (benilla builds a collider from its
+/// geometry), unlike a walk-through M2.
+///
+/// `sink` buries the model this far below the terrain. Buildings are authored with a tall base/plinth
+/// meant to be sunk into sloped ground (the floor sits at grade somewhere, the base fills the gap
+/// under the rest). On our FLAT basin nothing buries the base, so we lower the origin by the base
+/// height to bring the walk-in floor to ground level — otherwise you meet a ~base-height step and
+/// can't enter. This is the per-building analogue of WoW's hand-authored MODF `position.z`.
+const WMOS: &[(&str, f32, f32, f32, f32)] = &[
+    // (WMO root, world X, world Y, yaw°, sink yds). Sinks DERIVED from original map data via
+    // `benilla-extract <Data> wmosink Azeroth -8947 -153 16 buildings\` = median of
+    // (terrain − origin.z) over every real placement. Reliable for models WoW placed on open ADT
+    // terrain (farms, barn, stable, blacksmith); the city/platform ones (inn, chapel, guild house)
+    // have no ADT terrain under them so the tool can't measure them → left 0 pending a visual check.
+    // NOTE: layout changed from two horizontal rows to two vertical COLUMNS (X -180 / X -360) so a
+    // relaunch visibly proves the new ADT loaded; sinks are unchanged (data-derived, see above).
+    ("World\\wmo\\Azeroth\\Buildings\\human_farm\\farm.wmo", -270.0, -150.0, 0.0, 3.3), // n=19 med 3.11 (3.3 looks right)
+    ("World\\wmo\\Azeroth\\Buildings\\GoldshireInn\\GoldshireInn.wmo", -180.0, -140.0, 0.0, 0.0), // no ADT placements (city)
+    ("World\\wmo\\Azeroth\\Buildings\\Chapel\\RedridgeChapel.wmo", -180.0, -200.0, 0.0, 0.0), // Chapel.wmo is a graybox (1 flat-gray texture); RedridgeChapel is fully textured (12)
+    ("World\\wmo\\Azeroth\\Buildings\\GoldshireBlacksmith\\goldshireblacksmith.wmo", -180.0, -260.0, 0.0, 0.0), // n=3 med 0.00
+    ("World\\wmo\\Azeroth\\Buildings\\HumanTwoStory\\HumanTwoStory.wmo", -180.0, -320.0, 0.0, -1.5), // n=4 med -1.50 (origin above floor)
+    ("World\\wmo\\Azeroth\\Buildings\\Human_Barracks\\Human_Barracks.wmo", -180.0, -380.0, 0.0, -3.5), // n=2 med -3.50
+    ("World\\wmo\\Azeroth\\Buildings\\GuardTower\\GuardTower.wmo", -360.0, -140.0, 0.0, 0.0), // n=5 noisy (hills), default 0
+    ("World\\wmo\\Azeroth\\Buildings\\Human_Barn_Silo\\barn.wmo", -360.0, -200.0, 0.0, 1.4), // n=4 med 1.44
+    ("World\\wmo\\Azeroth\\Buildings\\Duskwood_Stable\\Duskwood_Stable.wmo", -360.0, -260.0, 0.0, 0.0), // n=8 med -0.06
+    ("World\\wmo\\Azeroth\\Buildings\\GuildHouses\\GuildHouseA.wmo", -360.0, -320.0, 0.0, 0.0), // no ADT placements (city)
+    ("World\\wmo\\Azeroth\\Buildings\\Westfall_human_farm\\Westfall_human_farm.wmo", -360.0, -380.0, 0.0, 3.0), // n=4 med 3.00
+];
 
 /// Candidate ground textures, in preference order; the first present in the install is used.
 const TEXTURE_CANDIDATES: &[&str] = &[
@@ -192,10 +243,11 @@ fn rim_noise(theta: f32, seed: u32, period: f32) -> f32 {
     fbm(theta.cos() * RIM_CIRCLE_R, theta.sin() * RIM_CIRCLE_R, period, seed, 3)
 }
 
-/// World terrain height at (vx,vy): an edge-distance basin bias with seeded noise layered on.
+/// The bare basin height at (vx,vy): an edge-distance basin bias with seeded noise layered on.
 /// Floor undulates gently; the ramp has faded hillside bumps; the crest is a flat per-rim plateau
 /// whose height undulates along the perimeter but is clamped to CREST_MIN so no saddle dips low.
-fn surface_z(vx: f32, vy: f32, ox: f32, oy: f32) -> f32 {
+/// [`surface_z`] carves the dug lake bowl on top of this.
+fn basin_z(vx: f32, vy: f32, ox: f32, oy: f32) -> f32 {
     let ed = edge_dist(vx, vy, ox, oy);
     let theta = rim_angle(vx, vy, ox, oy);
     let band = BAND + BAND_VAR * rim_noise(theta, 0x00B4, BAND_RIM_PERIOD);
@@ -213,6 +265,63 @@ fn surface_z(vx: f32, vy: f32, ox: f32, oy: f32) -> f32 {
     let s = fade(t);
     let bump = RAMP_BUMP_AMP * (4.0 * s * (1.0 - s)) * fbm(vx, vy, HILL_PERIOD, 0x0077, 3);
     floor + (crest - floor) * s + bump
+}
+
+/// How far the dug lake bowl lowers the terrain at (vx,vy): a smooth dish, `LAKE_DEPTH` deep at the
+/// centre easing to 0 at `LAKE_RADIUS` (smoothstep), and exactly 0 outside — the rest of the basin is
+/// untouched. Subtracted from [`basin_z`] by [`surface_z`].
+fn lake_bed_drop(vx: f32, vy: f32) -> f32 {
+    let r = ((vx - LAKE_X).powi(2) + (vy - LAKE_Y).powi(2)).sqrt();
+    if r >= LAKE_RADIUS {
+        return 0.0;
+    }
+    let t = 1.0 - r / LAKE_RADIUS; // 1 at centre, 0 at rim
+    LAKE_DEPTH * (t * t * (3.0 - 2.0 * t)) // smoothstep
+}
+
+/// World terrain height at (vx,vy): the basin with the lake bowl carved in. Every height consumer
+/// (MCVT, normals, the MCLQ bed sampling, the verify) goes through here, so the bed and its shaded
+/// slopes are real geometry.
+fn surface_z(vx: f32, vy: f32, ox: f32, oy: f32) -> f32 {
+    basin_z(vx, vy, ox, oy) - lake_bed_drop(vx, vy)
+}
+
+/// The MCLQ liquid block (804 bytes) for the chunk whose NW corner is (wx,wy), or `None` when no cell
+/// sits under `LAKE_FILL_Z`. A flat still-water surface: a 9×9 grid all at the fill height, a
+/// per-vertex depth byte from (fill − bed) for the shore ramp, and 8×8 cell nibbles 0 (still water)
+/// where wet / 0xf dry. Vertex (row,col) is at (wx−row·UNIT, wy−col·UNIT), matching benilla's mesher.
+fn build_mclq(wx: f32, wy: f32, ox: f32, oy: f32) -> Option<Vec<u8>> {
+    let bed = |r: f32, c: f32| surface_z(wx - r * UNIT_SIZE, wy - c * UNIT_SIZE, ox, oy);
+    let mut cell_wet = [false; 64];
+    let mut any = false;
+    for row in 0..8usize {
+        for col in 0..8usize {
+            let wet = bed(row as f32 + 0.5, col as f32 + 0.5) < LAKE_FILL_Z; // cell-centre bed
+            cell_wet[row * 8 + col] = wet;
+            any |= wet;
+        }
+    }
+    if !any {
+        return None;
+    }
+    let mut block = Vec::with_capacity(0x324);
+    block.extend_from_slice(&LAKE_FILL_Z.to_le_bytes()); // min_height
+    block.extend_from_slice(&LAKE_FILL_Z.to_le_bytes()); // max_height
+    for row in 0..9usize {
+        for col in 0..9usize {
+            let depth = (LAKE_FILL_Z - bed(row as f32, col as f32)).max(0.0);
+            block.push((depth * 9.0).clamp(0.0, 255.0) as u8); // union[0] = depth byte (lake swatch V=byte/42)
+            block.extend_from_slice(&[0u8; 3]); // union[1..4] (flow, unread by benilla)
+            block.extend_from_slice(&LAKE_FILL_Z.to_le_bytes()); // absolute surface height
+        }
+    }
+    for &wet in &cell_wet {
+        block.push(if wet { 0x00 } else { 0x0f }); // low nibble: 0 still water, 0xf dry
+    }
+    block.extend_from_slice(&0u32.to_le_bytes()); // nFlow = 0
+    block.extend_from_slice(&[0u8; 80]); // 2×40B flow data (unread)
+    debug_assert_eq!(block.len(), 0x324);
+    Some(block)
 }
 
 /// Per-vertex MCNR normal from the height field, as the i8 [x,y,z] the file stores (WoW X,Y,Z).
@@ -275,21 +384,35 @@ fn build_mcnk(index_x: u32, index_y: u32, ox: f32, oy: f32, impassable: bool) ->
     let mcvt = iff(b"TVCM", &mcvt_payload);
     let mcnr = iff(b"RNCM", &mcnr_payload);
     let mcly = iff(b"YLCM", &mcly_payload);
+    let mclq_block = build_mclq(wx, wy, ox, oy);
+    let mclq = mclq_block.as_ref().map(|b| iff(b"QLCM", b));
 
     // Header offsets use the "+8 from the MCNK magic" convention (benilla's reader resolves both).
     let ofs_mcvt = 8 + 128u32;
     let ofs_mcnr = 8 + 128 + mcvt.len() as u32;
     let ofs_mcly = 8 + 128 + mcvt.len() as u32 + mcnr.len() as u32;
+    let ofs_mclq = ofs_mcly + mcly.len() as u32;
+
+    // MCNK_IMPASSABLE flags the outer ring; the 0x4 liquid header bit marks a chunk that carries
+    // water (the actual type is each cell's nibble, not this bit). The lake is interior, never a ring.
+    let mut flags = if impassable { benilla_adt::MCNK_IMPASSABLE } else { 0 };
+    if mclq.is_some() {
+        flags |= 0x4;
+    }
 
     let mut h = vec![0u8; 128];
-    put_u32(&mut h, 0x00, if impassable { benilla_adt::MCNK_IMPASSABLE } else { 0 });
+    put_u32(&mut h, 0x00, flags);
     put_u32(&mut h, 0x04, index_x);
     put_u32(&mut h, 0x08, index_y);
     put_u32(&mut h, 0x0C, 1); // nLayers (reader ignores; retail-correct)
     put_u32(&mut h, 0x14, ofs_mcvt);
     put_u32(&mut h, 0x18, ofs_mcnr);
     put_u32(&mut h, 0x1C, ofs_mcly);
-    // areaid (0x34), holes (0x3C), MCAL/MCSH/MCLQ offsets, pred_tex etc. all stay 0.
+    if let Some(b) = &mclq_block {
+        put_u32(&mut h, 0x60, ofs_mclq); // ofsMCLQ
+        put_u32(&mut h, 0x64, b.len() as u32); // sizeLiquid — benilla reads the MCLQ length from here
+    }
+    // areaid (0x34), holes (0x3C), MCAL/MCSH offsets, pred_tex etc. all stay 0.
     // position = the chunk's NW (max) corner, WoW [X north, Y west, Z up]; base Z = FLOOR_Z.
     put_f32(&mut h, 0x68, wx);
     put_f32(&mut h, 0x6C, wy);
@@ -299,6 +422,9 @@ fn build_mcnk(index_x: u32, index_y: u32, ox: f32, oy: f32, impassable: bool) ->
     data.extend_from_slice(&mcvt);
     data.extend_from_slice(&mcnr);
     data.extend_from_slice(&mcly);
+    if let Some(m) = &mclq {
+        data.extend_from_slice(m);
+    }
     iff(b"KNCM", &data)
 }
 
@@ -320,7 +446,66 @@ fn chunk_impassable(index_x: u32, index_y: u32, ox: f32, oy: f32) -> bool {
     min_ed < IMPASSABLE_ED
 }
 
-/// The whole ADT: MVER + MTEX + 256 MCNK (row-major, cy outer).
+/// Static-scenery chunks: MMDX (NUL-terminated model names), MMID (their offsets) and MDDF
+/// (placements). Each doodad's Z is the terrain height (`surface_z`) at its world (x,y); MDDF
+/// positions are corner-origin (benilla `terrain.rs`): stored as [32·TILE−Y, Z, 32·TILE−X].
+fn build_doodad_chunks(ox: f32, oy: f32) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+    let (mut mmdx, mut mmid, mut mddf) = (Vec::new(), Vec::new(), Vec::new());
+    for (i, &(path, wx, wy, scale)) in DOODADS.iter().enumerate() {
+        mmid.extend_from_slice(&(mmdx.len() as u32).to_le_bytes()); // offset of this name
+        mmdx.extend_from_slice(path.as_bytes());
+        mmdx.push(0); // NUL
+        let z = surface_z(wx, wy, ox, oy);
+        let pos = [MAP_OFFSET - wy, z, MAP_OFFSET - wx]; // corner-origin MDDF coords
+        mddf.extend_from_slice(&(i as u32).to_le_bytes()); // name_id (MMID index)
+        mddf.extend_from_slice(&(1_000_001 + i as u32).to_le_bytes()); // unique_id
+        for v in pos {
+            mddf.extend_from_slice(&v.to_le_bytes());
+        }
+        for r in [0.0f32; 3] {
+            mddf.extend_from_slice(&r.to_le_bytes()); // rotation (degrees)
+        }
+        mddf.extend_from_slice(&((scale * 1024.0) as u16).to_le_bytes()); // scale ×1024
+        mddf.extend_from_slice(&0u16.to_le_bytes()); // flags
+    }
+    (iff(b"XDMM", &mmdx), iff(b"DIMM", &mmid), iff(b"FDDM", &mddf))
+}
+
+/// Building chunks: MWMO (NUL-terminated WMO root names), MWID (their offsets) and MODF (placements,
+/// 64 bytes each). benilla reads name_id@0, unique_id@4, pos@8, rotation@20 (degrees, Y = heading),
+/// flags@56 and the doodad/name sets@58/60; it ignores the bounding box at 32..56, so we zero it.
+/// Positions are corner-origin like MDDF (benilla `terrain.rs` MODF path): [32·TILE−Y, Z, 32·TILE−X].
+fn build_wmo_chunks(ox: f32, oy: f32) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+    let (mut mwmo, mut mwid, mut modf) = (Vec::new(), Vec::new(), Vec::new());
+    // Tuning knob: `WMO_SINK=<yards>` overrides every building's sink for quick eyeballing.
+    let sink_override: Option<f32> = std::env::var("WMO_SINK").ok().and_then(|s| s.parse().ok());
+    for (i, &(path, wx, wy, yaw, sink)) in WMOS.iter().enumerate() {
+        let sink = sink_override.unwrap_or(sink);
+        mwid.extend_from_slice(&(mwmo.len() as u32).to_le_bytes()); // offset of this name
+        mwmo.extend_from_slice(path.as_bytes());
+        mwmo.push(0); // NUL
+        let z = surface_z(wx, wy, ox, oy) - sink; // bury the base/plinth (see WMOS doc)
+        let pos = [MAP_OFFSET - wy, z, MAP_OFFSET - wx]; // corner-origin MODF coords
+        modf.extend_from_slice(&(i as u32).to_le_bytes()); // name_id (MWID index)
+        modf.extend_from_slice(&(2_000_001 + i as u32).to_le_bytes()); // unique_id
+        for v in pos {
+            modf.extend_from_slice(&v.to_le_bytes());
+        }
+        for r in [0.0f32, yaw, 0.0] {
+            modf.extend_from_slice(&r.to_le_bytes()); // rotation degrees (Y = heading about up)
+        }
+        for _ in 0..6 {
+            modf.extend_from_slice(&0.0f32.to_le_bytes()); // bounding box (unread by benilla)
+        }
+        modf.extend_from_slice(&0u16.to_le_bytes()); // flags
+        modf.extend_from_slice(&0u16.to_le_bytes()); // doodad_set (0 = always-on set)
+        modf.extend_from_slice(&0u16.to_le_bytes()); // name_set
+        modf.extend_from_slice(&0u16.to_le_bytes()); // pad (scale, unused in 1.12)
+    }
+    (iff(b"OMWM", &mwmo), iff(b"DIWM", &mwid), iff(b"FDOM", &modf))
+}
+
+/// The whole ADT: MVER + MTEX + doodads (MMDX/MMID/MDDF) + 256 MCNK (row-major, cy outer).
 fn build_adt(texture: &str) -> Vec<u8> {
     let mut out = Vec::new();
     out.extend(iff(b"REVM", &18u32.to_le_bytes())); // MVER
@@ -328,6 +513,14 @@ fn build_adt(texture: &str) -> Vec<u8> {
     mtex.push(0);
     out.extend(iff(b"XETM", &mtex)); // MTEX (one NUL-terminated name)
     let (ox, oy) = tile_to_world(TILE_X, TILE_Y);
+    let (mmdx, mmid, mddf) = build_doodad_chunks(ox, oy);
+    out.extend(mmdx); // MMDX (doodad model names)
+    out.extend(mmid); // MMID (name offsets)
+    out.extend(mddf); // MDDF (doodad placements)
+    let (mwmo, mwid, modf) = build_wmo_chunks(ox, oy);
+    out.extend(mwmo); // MWMO (WMO root names)
+    out.extend(mwid); // MWID (name offsets)
+    out.extend(modf); // MODF (WMO placements)
     for cy in 0..16u32 {
         for cx in 0..16u32 {
             out.extend(build_mcnk(cx, cy, ox, oy, chunk_impassable(cx, cy, ox, oy)));
@@ -413,6 +606,20 @@ fn verify(adt: &[u8], wdt: &[u8], map_dbc: &[u8], texture: &str) -> Result<()> {
         benilla_adt::parse_adt(&mut Cursor::new(adt)).context("parse_adt")?;
     ensure!(root.mcnk_chunks.len() == 256, "expected 256 MCNK, got {}", root.mcnk_chunks.len());
     ensure!(root.textures == [texture.to_string()], "MTEX mismatch: {:?}", root.textures);
+    ensure!(
+        root.doodad_placements.len() == DOODADS.len() && root.models.len() == DOODADS.len(),
+        "doodad round-trip: {} placements / {} models, want {}",
+        root.doodad_placements.len(),
+        root.models.len(),
+        DOODADS.len()
+    );
+    ensure!(
+        root.wmo_placements.len() == WMOS.len() && root.wmos.len() == WMOS.len(),
+        "wmo round-trip: {} placements / {} names, want {}",
+        root.wmo_placements.len(),
+        root.wmos.len(),
+        WMOS.len()
+    );
     let (ox, oy) = tile_to_world(TILE_X, TILE_Y);
     let mut n_impassable = 0usize;
     for (i, c) in root.mcnk_chunks.iter().enumerate() {
@@ -439,6 +646,11 @@ fn verify(adt: &[u8], wdt: &[u8], map_dbc: &[u8], texture: &str) -> Result<()> {
     // --- ADT via the terrain mesher: the noisy basin profile holds end-to-end ---
     let mesh = benilla_formats::adt_to_tile_mesh(adt).context("adt_to_tile_mesh")?;
     ensure!(mesh.chunks.len() == 256, "mesh chunk count {}", mesh.chunks.len());
+    // --- the dug lake: MCLQ must round-trip to real liquid surfaces ---
+    let n_liquid_chunks = root.mcnk_chunks.iter().filter(|c| !c.liquids.is_empty()).count();
+    ensure!(n_liquid_chunks > 0, "no MCLQ liquid chunks emitted — lake missing");
+    let n_liquid_surfaces: usize = mesh.chunks.iter().map(|c| c.liquids.len()).sum();
+    ensure!(n_liquid_surfaces > 0, "mesher produced no liquid surfaces from the lake");
     let floor_tol = FLOOR_NOISE_AMP + 0.6; // f32 round-trip slack over the noise amplitude
     let floor_test_ed = BAND + BAND_VAR + 3.0; // beyond any possible ramp start -> unambiguous floor
     let ring_ed = IMPASSABLE_ED; // edge_dist contour at the impassable region's inner face
@@ -448,8 +660,8 @@ fn verify(adt: &[u8], wdt: &[u8], map_dbc: &[u8], texture: &str) -> Result<()> {
     for ch in &mesh.chunks {
         for p in &ch.positions {
             let ed = edge_dist(p[0], p[1], ox, oy);
-            // (a) the deep interior is a walkable low band around FLOOR_Z.
-            if ed >= floor_test_ed {
+            // (a) the deep interior is a walkable low band around FLOOR_Z — except the dug lake bowl.
+            if ed >= floor_test_ed && lake_bed_drop(p[0], p[1]) == 0.0 {
                 ensure!(
                     (p[2] - FLOOR_Z).abs() <= floor_tol,
                     "interior vertex z {} outside floor band at edge_dist {ed:.1}",

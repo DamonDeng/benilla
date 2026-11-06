@@ -24,7 +24,7 @@ pub use sequence::{
     fxlifescan, goanimscan, goslotscan, idleslotscan, seqclockscan, soundeventscan,
 };
 pub use skeleton::{attachscan, bonescan, eventmarkerscan};
-pub use world::{doodadscan, placescan, skyboxscan, wmodoodads};
+pub use world::{doodadscan, placescan, skyboxscan, wmodoodads, wmosink};
 
 /// Every `.m2` in the chain in listfile order and casing, narrowed to a path `prefix` matched
 /// case-insensitively with either slash.

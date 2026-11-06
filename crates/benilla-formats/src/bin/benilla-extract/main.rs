@@ -507,6 +507,24 @@ enum Command {
         #[arg(allow_hyphen_values = true)]
         y: f32,
     },
+    /// Derive a building's "sink" (yards its origin sits below grade) from the ORIGINAL map data:
+    /// for each real MODF placement matching the filter, print `terrain_height_at(origin) − origin.z`
+    /// and a per-model median. That median is the value to bury the model by when placing it on flat
+    /// ground (the designers chose origin.z so the model's floor met the terrain).
+    Wmosink {
+        /// Map directory name (e.g. `Azeroth`).
+        map: String,
+        /// World-space center X (may be negative).
+        #[arg(allow_hyphen_values = true)]
+        center_x: f32,
+        /// World-space center Y (may be negative).
+        #[arg(allow_hyphen_values = true)]
+        center_y: f32,
+        /// ADT tile radius around the center tile to scan (0 = just the containing tile).
+        tile_radius: u32,
+        /// Case-insensitive substring of the WMO model path (e.g. `human_farm`).
+        filter: String,
+    },
 }
 
 /// MPQ internal paths are backslash-separated; accept `/` for convenience.
@@ -787,6 +805,13 @@ fn main() -> Result<()> {
             tile_radius,
         } => scan::doodadscan(&mut chain, &map, center_x, center_y, tile_radius)?,
         Command::Shadeat { map, x, y } => scan::shadeat(&mut chain, &map, x, y)?,
+        Command::Wmosink {
+            map,
+            center_x,
+            center_y,
+            tile_radius,
+            filter,
+        } => scan::wmosink(&mut chain, &map, center_x, center_y, tile_radius, &filter)?,
         Command::Spellvis { spell_id } => spellvis::run(&mut chain, spell_id)?,
         Command::Chaincensus => chaincensus::run(&mut chain)?,
         Command::Shakecensus => shakecensus::shakecensus(&mut chain)?,
