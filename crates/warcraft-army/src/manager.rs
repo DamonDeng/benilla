@@ -88,16 +88,72 @@ enum InWorldExit {
     Dropped(Option<String>),
 }
 
-/// The accounts the army may drive. Hardcoded for now; becomes DB discovery + `army-secrets.toml`.
+/// The accounts the army may drive, loaded from a PRIVATE `army-secrets.toml` — never from the
+/// repo (the passwords are credentials; see [`Account`]). The file is named by `ARMY_SECRETS`, or
+/// `army-secrets.toml` in the working directory by default. When it is absent the army simply
+/// starts with an empty roster, so no credentials ever need to live in the tree. See
+/// `army-secrets.toml.example` for the format.
 pub fn default_accounts() -> Vec<Account> {
-    ["TESTONE", "TESTTWO"]
-        .iter()
-        .map(|u| Account {
-            user: (*u).to_string(),
-            pass: "<password>".to_string(),
-            realmlist: "127.0.0.1".to_string(),
-        })
-        .collect()
+    let path = std::env::var("ARMY_SECRETS").unwrap_or_else(|_| "army-secrets.toml".into());
+    match std::fs::read_to_string(&path) {
+        Ok(text) => parse_accounts(&text),
+        Err(_) => {
+            eprintln!(
+                "army: no accounts file at {path} (set ARMY_SECRETS, or copy \
+                 army-secrets.toml.example to army-secrets.toml); starting with an empty roster"
+            );
+            Vec::new()
+        }
+    }
+}
+
+/// Parse the roster file — a tiny TOML of `[[account]]` tables (`user`/`pass`, optional per-account
+/// `realmlist`), with an optional top-level `realmlist` default for all of them. Hand-parsed to
+/// avoid a TOML dependency in the army, matching `session::tunnel_config`. Accounts missing a
+/// `user` or `pass` are skipped.
+fn parse_accounts(text: &str) -> Vec<Account> {
+    let mut default_realmlist = "127.0.0.1".to_string();
+    let mut accounts: Vec<Account> = Vec::new();
+    let mut cur: Option<Account> = None;
+    let mut seen_table = false;
+
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if line == "[[account]]" {
+            if let Some(a) = cur.take() {
+                if !a.user.is_empty() && !a.pass.is_empty() {
+                    accounts.push(a);
+                }
+            }
+            cur = Some(Account {
+                user: String::new(),
+                pass: String::new(),
+                realmlist: default_realmlist.clone(),
+            });
+            seen_table = true;
+            continue;
+        }
+        if let Some((k, v)) = line.split_once('=') {
+            let v = v.trim().trim_matches('"').to_string();
+            match (cur.as_mut(), k.trim()) {
+                (Some(a), "user") => a.user = v,
+                (Some(a), "pass") => a.pass = v,
+                (Some(a), "realmlist") => a.realmlist = v,
+                // A top-level `realmlist` (before any table) is the default for every account.
+                (None, "realmlist") if !seen_table => default_realmlist = v,
+                _ => {}
+            }
+        }
+    }
+    if let Some(a) = cur.take() {
+        if !a.user.is_empty() && !a.pass.is_empty() {
+            accounts.push(a);
+        }
+    }
+    accounts
 }
 
 pub struct Manager {

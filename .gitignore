@@ -25,6 +25,11 @@
 # client's account guard read it): WOW_USER=, WOW_PASS=, WOW_CHAR=, one per line. A credential.
 /.probe-identity
 
+# The army's bot-account roster (user/pass per account) — a credential. Loaded by
+# warcraft-army (ARMY_SECRETS, or this default path); create it from
+# crates/warcraft-army/army-secrets.toml.example. Never commit the real file.
+army-secrets.toml
+
 # Profiling output: `--features bevy/trace_chrome` drops a multi-GB flame chart in the cwd, which
 # otherwise leaves the checkout "dirty".
 trace-*.json

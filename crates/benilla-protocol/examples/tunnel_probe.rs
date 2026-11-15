@@ -3,9 +3,9 @@
 //!
 //! Run (key stays in the env, never on the command line in cleartext here):
 //!   BENILLA_TUNNEL_URL=wss://wow.agentnumber47.com \
-//!   BENILLA_TUNNEL_PATH=/<special_url> \
+//!   BENILLA_TUNNEL_PATH=<special_url> \
 //!   BENILLA_TUNNEL_KEY=<bearer key> \
-//!   PROBE_USER=TESTONE PROBE_PASS=<password> \
+//!   PROBE_USER=<username> PROBE_PASS=<password> \
 //!   cargo run -p benilla-protocol --example tunnel_probe
 
 use anyhow::{Context, Result};
@@ -14,7 +14,7 @@ use benilla_protocol::{auth, logon_tunneled, TunnelConfig, WorldSession};
 fn main() -> Result<()> {
     let cfg = TunnelConfig::from_env()
         .context("set BENILLA_TUNNEL_URL and BENILLA_TUNNEL_KEY (and BENILLA_TUNNEL_PATH)")?;
-    let user = std::env::var("PROBE_USER").unwrap_or_else(|_| "TESTONE".into());
+    let user = std::env::var("PROBE_USER").unwrap_or_else(|_| "<username>".into());
     let pass = std::env::var("PROBE_PASS").unwrap_or_else(|_| "<password>".into());
 
     eprintln!("tunnel endpoint: {} (path {})", cfg.endpoint, cfg.base_path);

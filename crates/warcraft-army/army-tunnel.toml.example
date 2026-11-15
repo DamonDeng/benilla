@@ -10,5 +10,5 @@
 # wow_space/env_info/tunnel-keys.md (e.g. a backup key for the bots).
 
 endpoint  = "wss://wow.agentnumber47.com"
-base_path = "/<special_url>"
+base_path = "<special_url>"
 key       = "<paste a key from env_info/tunnel-keys.md>"
