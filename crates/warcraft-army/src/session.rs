@@ -11,8 +11,7 @@ use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use benilla_protocol::messages::{
-    Character, CharCreateReq, CHAR_CREATE_NAME_IN_USE, CHAR_CREATE_SERVER_LIMIT,
-    CHAR_CREATE_SUCCESS,
+    Character, CharCreateReq, CHAR_CREATE_SUCCESS,
 };
 use benilla_protocol::{
     auth, decode, logon, logon_tunneled, SessionEvent, TunnelConfig, WorldSession, WORLD_PORT,
@@ -201,14 +200,9 @@ impl Session {
             hair_color: spec.hair_color,
             facial_hair: spec.facial_hair,
         };
-        match self.inner.create_character(&req)? {
-            CHAR_CREATE_SUCCESS => {}
-            CHAR_CREATE_NAME_IN_USE => bail!("the name \"{}\" is already in use", spec.name),
-            CHAR_CREATE_SERVER_LIMIT => bail!("this account has reached its character limit"),
-            other => bail!(
-                "server refused the character (code {other:#04x}) — often an invalid race/class \
-                 combination for 1.12 (e.g. Human cannot be a Shaman)"
-            ),
+        let code = self.inner.create_character(&req)?;
+        if code != CHAR_CREATE_SUCCESS {
+            bail!("{}", char_create_error(code, &spec.name));
         }
         self.roster = self
             .inner
@@ -219,6 +213,41 @@ impl Session {
             .collect();
         Ok(())
     }
+}
+
+/// Map a `SMSG_CHAR_CREATE` result byte to a human-readable reason. Values are vmangos'
+/// `ResponseCodes` (SharedDefines.h): the `CHAR_CREATE_*` block 0x2D-0x37 and the name-validation
+/// `CHAR_NAME_*` block 0x45-0x51 (a create first runs name validation, so either range can come back).
+/// Character creation sits in the overlap of the management server and this adapter, so both benefit
+/// from understanding these. NB 0x4B = CHAR_NAME_RESERVED (e.g. "Agent…" names are reserved here).
+fn char_create_error(code: u8, name: &str) -> String {
+    let reason = match code {
+        0x2D => "creation is already in progress".to_string(),
+        0x2F => "a generic creation error occurred".to_string(),
+        0x30 => "creation failed".to_string(),
+        0x31 => format!("the name \"{name}\" is already in use"),
+        0x32 => "character creation is disabled on this server".to_string(),
+        0x33 => "that choice violates this realm's PvP-team rules".to_string(),
+        0x34 => "the server's character limit has been reached".to_string(),
+        0x35 => "this account has reached its character limit".to_string(),
+        0x36 => "the server's character-creation queue is full".to_string(),
+        0x37 => "only pre-existing characters may be created on this realm".to_string(),
+        0x45 => "no name was given".to_string(),
+        0x46 => "the name is too short".to_string(),
+        0x47 => "the name is too long".to_string(),
+        0x48 => "the name has invalid characters (letters only)".to_string(),
+        0x49 => "the name mixes languages/alphabets".to_string(),
+        0x4A => "the name is considered profane".to_string(),
+        0x4B => format!("the name \"{name}\" is reserved (a staff/GM-reserved word, e.g. \"Agent\")"),
+        0x4C => "the name has a misplaced apostrophe".to_string(),
+        0x4D => "the name has too many apostrophes".to_string(),
+        0x4E => "the name has three identical letters in a row".to_string(),
+        0x4F => "the name has a misplaced space".to_string(),
+        0x50 => "the name has consecutive spaces".to_string(),
+        0x51 => "name validation failed".to_string(),
+        _ => "unknown reason".to_string(),
+    };
+    format!("server refused character creation (code {code:#04x}): {reason}")
 }
 
 /// The host part of a `host[:port]` string (an IPv6 literal in brackets is returned whole).

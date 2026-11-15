@@ -111,8 +111,7 @@ const WMOS: &[(&str, f32, f32, f32, f32)] = &[
 
 /// Candidate ground textures, in preference order; the first present in the install is used.
 const TEXTURE_CANDIDATES: &[&str] = &[
-    "Tileset\\Elwynn\\ElwynnGrassLight.blp",
-    "Tileset\\Elwynn\\ElwynnBaseGrass.blp",
+    "Tileset\\Elwynn\\ElwynnGrassBase.blp", // the real Elwynn grass (Northshire's own ADT uses this)
     "Tileset\\Barrens\\BarrensBaseDirt.blp",
     "Tileset\\Generic\\black.blp",
 ];
@@ -793,8 +792,81 @@ fn stage(real_data: &Path, overlay: &Path, adt: &[u8], wdt: &[u8], map_dbc: &[u8
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
+    // `height <x> <y> [<x> <y> ...]`: print the map-800 terrain height (basin + lake) at each world
+    // (x,y), for placing DB content (NPCs, GOs) on the ground instead of a guessed fixed z. Prints
+    // one `x y z` line per pair; uses this tile's origin, so it matches what mapgen bakes.
+    if args.len() >= 4 && args[1] == "height" {
+        let coords = &args[2..];
+        if coords.len() % 2 != 0 {
+            bail!("usage: warcraft-mapgen height <x> <y> [<x> <y> ...]");
+        }
+        let (ox, oy) = tile_to_world(TILE_X, TILE_Y);
+        for pair in coords.chunks(2) {
+            let x: f32 = pair[0].parse().with_context(|| format!("bad x {:?}", pair[0]))?;
+            let y: f32 = pair[1].parse().with_context(|| format!("bad y {:?}", pair[1]))?;
+            println!("{x:.3} {y:.3} {:.4}", surface_z(x, y, ox, oy));
+        }
+        return Ok(());
+    }
+    // `servermap <out.map>`: emit the vmangos SERVER-side terrain-height file for map 800 tile 32,32
+    // (`maps/8003232.map`), sampled from `surface_z` so the server's GetHeight matches the client.
+    // Without this the server has no height on map 800 (GetHeight -> -200000) and any creature that
+    // MOVES hangs the world thread. Format: GridMapFileHeader(40) + MHGT header(16) + V9(129x129 f32)
+    // + V8(128x128 f32), all little-endian, matching GridMap::loadHeightData / getHeightFromFloat.
+    if args.len() == 3 && args[1] == "servermap" {
+        let out = PathBuf::from(&args[2]);
+        let (ox, oy) = tile_to_world(TILE_X, TILE_Y);
+        let unit = TILE_SIZE / 128.0; // yards between grid samples (≈4.1667)
+        let (mut hmin, mut hmax) = (f32::INFINITY, f32::NEG_INFINITY);
+        let mut v9 = Vec::with_capacity(129 * 129); // corners, X outer (stride 129), Y inner
+        for i in 0..=128usize {
+            for j in 0..=128usize {
+                let h = surface_z(ox - i as f32 * unit, oy - j as f32 * unit, ox, oy);
+                hmin = hmin.min(h);
+                hmax = hmax.max(h);
+                v9.push(h);
+            }
+        }
+        let mut v8 = Vec::with_capacity(128 * 128); // cell centres
+        for i in 0..128usize {
+            for j in 0..128usize {
+                let h = surface_z(ox - (i as f32 + 0.5) * unit, oy - (j as f32 + 0.5) * unit, ox, oy);
+                hmin = hmin.min(h);
+                hmax = hmax.max(h);
+                v8.push(h);
+            }
+        }
+        let height_size = 16 + (v9.len() + v8.len()) * 4;
+        let mut buf = Vec::with_capacity(40 + height_size);
+        buf.extend_from_slice(b"MAPS"); // mapMagic
+        buf.extend_from_slice(b"z1.4"); // versionMagic
+        buf.extend_from_slice(&0u32.to_le_bytes()); // areaMapOffset (0 = skip; area 0)
+        buf.extend_from_slice(&0u32.to_le_bytes()); // areaMapSize
+        buf.extend_from_slice(&40u32.to_le_bytes()); // heightMapOffset
+        buf.extend_from_slice(&(height_size as u32).to_le_bytes()); // heightMapSize
+        buf.extend_from_slice(&0u32.to_le_bytes()); // liquidMapOffset (0 = skip)
+        buf.extend_from_slice(&0u32.to_le_bytes()); // liquidMapSize
+        buf.extend_from_slice(&0u32.to_le_bytes()); // holesOffset (0 = skip)
+        buf.extend_from_slice(&0u32.to_le_bytes()); // holesSize
+        buf.extend_from_slice(b"MHGT"); // fourcc
+        buf.extend_from_slice(&0u32.to_le_bytes()); // flags = 0 (float grid, has height)
+        buf.extend_from_slice(&hmin.to_le_bytes()); // gridHeight
+        buf.extend_from_slice(&hmax.to_le_bytes()); // gridMaxHeight
+        for h in v9.iter().chain(v8.iter()) {
+            buf.extend_from_slice(&h.to_le_bytes());
+        }
+        std::fs::write(&out, &buf).with_context(|| format!("write {}", out.display()))?;
+        println!(
+            "wrote {} ({} bytes) — map 800 tile 32,32 server height, {:.2}..{:.2} yd",
+            out.display(),
+            buf.len(),
+            hmin,
+            hmax
+        );
+        return Ok(());
+    }
     if args.len() != 3 {
-        bail!("usage: warcraft-mapgen <real-Data-dir> <overlay-Data-dir>");
+        bail!("usage: warcraft-mapgen <real-Data-dir> <overlay-Data-dir>  |  height <x> <y> ...  |  servermap <out.map>");
     }
     let real_data = PathBuf::from(&args[1]);
     let overlay = PathBuf::from(&args[2]);

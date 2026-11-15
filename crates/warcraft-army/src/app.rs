@@ -59,8 +59,12 @@ pub struct ArmyApp {
 
 impl ArmyApp {
     pub fn new() -> Self {
+        let manager = Manager::new(default_accounts());
+        // Start the agent-facing MCP control server (HTTP JSON-RPC on 127.0.0.1:8711). It shares
+        // the manager's control map, so it can drive any logged-in bot (raw_move/move_to/list_bots).
+        crate::mcp::serve(manager.control_handle());
         Self {
-            manager: Manager::new(default_accounts()),
+            manager,
             view: View::AllCharacters,
             selection: Selection::None,
             catalog: load_catalog(),
@@ -95,9 +99,13 @@ fn load_catalog() -> Option<CharCreateCatalog> {
 
 impl eframe::App for ArmyApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // Pull worker updates; keep repainting while a login is in flight.
+        // Pull worker updates; keep repainting fast while a login is in flight.
         if self.manager.pump() {
             ctx.request_repaint_after(Duration::from_millis(120));
+        } else {
+            // Even fully idle, tick a few times a second so MCP lifecycle requests (login from an
+            // offline state, which egui wouldn't otherwise wake for) are drained promptly.
+            ctx.request_repaint_after(Duration::from_millis(250));
         }
 
         self.icon_bar(ctx);

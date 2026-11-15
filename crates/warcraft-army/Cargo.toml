@@ -8,11 +8,18 @@ description = "Army management: headless benilla-protocol bot sessions on a 1.12
 [lints]
 workspace = true
 
+[build-dependencies]
+# Compiles the vendored Detour (vendor/detour) + src/navshim.cpp for navmesh path finding.
+cc = "1.0.79"
+
 [dependencies]
 benilla-protocol = { path = "../benilla-protocol" }
 benilla-formats = { path = "../benilla-formats" }
 anyhow.workspace = true
 eframe = "0.29.1"
+# MCP control adapter: a tiny HTTP + JSON-RPC server the agent/attendee talks to (src/mcp.rs).
+tiny_http = "0.12"
+serde_json = "1"
 
 [[bin]]
 name = "warcraft-army"
