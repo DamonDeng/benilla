@@ -32,8 +32,18 @@ key   = "<64 hex chars>"
 ```
 
 The key is presented as `Authorization: Bearer <key>` on the handshake. Lookup is constant-time.
-Revoke someone by deleting their row and restarting the bridge; the access log names the `owner` of
-every accepted connection.
+The access log names the `owner` of every accepted connection.
+
+**Hot reload:** the bridge re-reads `keys.toml` whenever its mtime changes (checked with one `stat`
+per handshake). Add a member by appending a row; revoke one by deleting their row — the next
+handshake honors the change, live relays are untouched, **no restart needed**. Safety rule: a
+missing, malformed, or *empty* file on reload keeps the previous keys and logs the problem (a typo
+mid-edit can't lock everyone out). Startup still refuses to run without valid keys.
+
+> **Docker gotcha:** if `keys.toml` is bind-mounted as a *single file*, editors that replace-by-rename
+> (`vim`, `sed -i`) swap the inode and the container keeps seeing the old file — the reload silently
+> never fires. Either edit in place (`cat > keys.toml` / append with `>>`), or mount the parent
+> *directory* and point `KEYS_FILE` into it. A restart still picks up any change, as before.
 
 ## Config (env)
 

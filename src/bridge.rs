@@ -36,8 +36,64 @@ struct KeysFile {
     members: Vec<KeyEntry>,
 }
 
-struct Config {
+/// The key register, hot-reloaded from `keys.toml` when its mtime changes (same pattern as the
+/// cmangos-mcp adapter's `LiveTokens::reload_if_changed`). Adding or revoking a member is now just an
+/// edit to the file — the next handshake picks it up; live relays are untouched; no bridge restart.
+struct LiveKeys {
+    path: String,
+    mtime: Option<SystemTime>,
     members: Vec<KeyEntry>,
+}
+
+impl LiveKeys {
+    fn file_mtime(&self) -> Option<SystemTime> {
+        std::fs::metadata(&self.path).and_then(|m| m.modified()).ok()
+    }
+
+    /// Reload only if the file's mtime changed since the last load. One stat per handshake — cheap
+    /// (handshakes are ~2 per client session). SAFETY RULE: a missing/malformed/EMPTY file on reload
+    /// keeps the OLD keys and logs the problem — a typo mid-edit must never lock every member out.
+    /// (Revoking the last member isn't a real operation; you'd stop the bridge instead.)
+    fn reload_if_changed(&mut self) {
+        let cur = self.file_mtime();
+        if cur == self.mtime {
+            return;
+        }
+        match std::fs::read_to_string(&self.path)
+            .map_err(|e| e.to_string())
+            .and_then(|t| toml::from_str::<KeysFile>(&t).map_err(|e| e.to_string()))
+        {
+            Ok(kf) if !kf.members.is_empty() => {
+                if kf.members.len() != self.members.len() {
+                    log(&format!("keys reloaded: {} -> {} members", self.members.len(), kf.members.len()));
+                } else {
+                    log(&format!("keys reloaded: {} members", kf.members.len()));
+                }
+                self.members = kf.members;
+            }
+            Ok(_) => log(&format!("keys reload REFUSED: {} has no members; keeping the previous {} keys", self.path, self.members.len())),
+            Err(e) => log(&format!("keys reload failed ({}): {e}; keeping the previous {} keys", self.path, self.members.len())),
+        }
+        // Mark this mtime as seen either way, so a broken file doesn't re-log every handshake;
+        // the next EDIT (new mtime) triggers another attempt.
+        self.mtime = cur;
+    }
+
+    /// The owner whose key equals `presented`, checked in constant time against every entry (no
+    /// early exit, so a timing side-channel can't reveal which prefix matched).
+    fn owner_for(&self, presented: &str) -> Option<String> {
+        let mut found: Option<String> = None;
+        for m in &self.members {
+            if ct_eq(presented.as_bytes(), m.key.as_bytes()) {
+                found = Some(m.owner.clone());
+            }
+        }
+        found
+    }
+}
+
+struct Config {
+    keys: Mutex<LiveKeys>,
     realm: String,
     world: String,
 }
@@ -49,25 +105,26 @@ impl Config {
             .with_context(|| format!("reading keys file {keys_path}"))?;
         let kf: KeysFile = toml::from_str(&text).context("parsing keys file")?;
         if kf.members.is_empty() {
-            bail!("no keys configured in {keys_path}");
+            bail!("no keys configured in {keys_path}");   // startup still hard-fails: never start keyless
         }
+        let mut keys = LiveKeys { path: keys_path, mtime: None, members: kf.members };
+        keys.mtime = keys.file_mtime();
         Ok(Config {
-            members: kf.members,
+            keys: Mutex::new(keys),
             realm: std::env::var("REALMD_ADDR").unwrap_or_else(|_| "127.0.0.1:3724".into()),
             world: std::env::var("WORLD_ADDR").unwrap_or_else(|_| "127.0.0.1:8085".into()),
         })
     }
 
-    /// The owner whose key equals `presented`, checked in constant time against every entry (no
-    /// early exit, so a timing side-channel can't reveal which prefix matched).
-    fn owner_for(&self, presented: &str) -> Option<&str> {
-        let mut found: Option<&str> = None;
-        for m in &self.members {
-            if ct_eq(presented.as_bytes(), m.key.as_bytes()) {
-                found = Some(&m.owner);
-            }
-        }
-        found
+    /// Auth check for one handshake: refresh the register if the file changed, then match the key.
+    fn owner_for(&self, presented: &str) -> Option<String> {
+        let mut keys = self.keys.lock().unwrap();
+        keys.reload_if_changed();
+        keys.owner_for(presented)
+    }
+
+    fn key_count(&self) -> usize {
+        self.keys.lock().unwrap().members.len()
     }
 }
 
@@ -103,8 +160,8 @@ async fn main() -> Result<()> {
         .await
         .with_context(|| format!("binding {listen}"))?;
     log(&format!(
-        "bridge listening on {listen} (keys: {}, realm: {}, world: {})",
-        cfg.members.len(),
+        "bridge listening on {listen} (keys: {}, hot-reload on, realm: {}, world: {})",
+        cfg.key_count(),
         cfg.realm,
         cfg.world
     ));
@@ -168,7 +225,7 @@ async fn handle(stream: TcpStream, peer: SocketAddr, cfg: Arc<Config>) -> Result
         };
         match (owner, backend) {
             (Some(o), Some(b)) => {
-                *d2.lock().unwrap() = Some((b, o.to_string()));
+                *d2.lock().unwrap() = Some((b, o));
                 Ok(resp)
             }
             _ => {
