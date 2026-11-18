@@ -1,15 +1,19 @@
 [package]
 name = "warcraft-tunnel"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
 description = "WebSocket<->TCP bridge fronting vmangos realmd/mangosd, gated by per-member keys"
+
+[lints]
+workspace = true
 
 [[bin]]
 name = "bridge"
 path = "src/bridge.rs"
 
 [dependencies]
-anyhow = "1"
+anyhow.workspace = true
 futures-util = "0.3"
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"

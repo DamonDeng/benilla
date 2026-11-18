@@ -1,9 +1,11 @@
-# Build stage — `rust:1` is the latest stable 1.x (needed: some deps use edition 2024).
+# Build from the benilla workspace root (the crate uses the workspace's lockfile and settings):
+#   docker build -f crates/warcraft-tunnel/Dockerfile -t warcraft-tunnel .
+# `rust:1` is the latest stable 1.x (needed: some deps use edition 2024). The root .dockerignore
+# keeps target/, the game data and the reference tables out of the build context.
 FROM rust:1-bookworm AS build
 WORKDIR /src
-COPY Cargo.toml Cargo.lock ./
-COPY src ./src
-RUN cargo build --release --bin bridge --locked
+COPY . .
+RUN cargo build --release -p warcraft-tunnel --bin bridge --locked
 
 # Runtime stage
 FROM debian:bookworm-slim

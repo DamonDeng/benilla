@@ -7,7 +7,8 @@
 //!
 //! Config via env:
 //!   KEYS_FILE      path to the TOML key register (default `keys.toml`)
-//!   TUNNEL_LISTEN  bind address (default `0.0.0.0:9090`)
+//!   TUNNEL_LISTEN  bind address (default `127.0.0.1:9090`; the container image sets `0.0.0.0:9090`,
+//!                  reached only by the load balancer on the private network)
 //!   REALMD_ADDR    realmd backend  (default `127.0.0.1:3724`; in compose: `realmd:3724`)
 //!   WORLD_ADDR     mangosd backend (default `127.0.0.1:8085`; in compose: `mangosd:8085`)
 
@@ -47,7 +48,9 @@ struct LiveKeys {
 
 impl LiveKeys {
     fn file_mtime(&self) -> Option<SystemTime> {
-        std::fs::metadata(&self.path).and_then(|m| m.modified()).ok()
+        std::fs::metadata(&self.path)
+            .and_then(|m| m.modified())
+            .ok()
     }
 
     /// Reload only if the file's mtime changed since the last load. One stat per handshake — cheap
@@ -65,14 +68,26 @@ impl LiveKeys {
         {
             Ok(kf) if !kf.members.is_empty() => {
                 if kf.members.len() != self.members.len() {
-                    log(&format!("keys reloaded: {} -> {} members", self.members.len(), kf.members.len()));
+                    log(&format!(
+                        "keys reloaded: {} -> {} members",
+                        self.members.len(),
+                        kf.members.len()
+                    ));
                 } else {
                     log(&format!("keys reloaded: {} members", kf.members.len()));
                 }
                 self.members = kf.members;
             }
-            Ok(_) => log(&format!("keys reload REFUSED: {} has no members; keeping the previous {} keys", self.path, self.members.len())),
-            Err(e) => log(&format!("keys reload failed ({}): {e}; keeping the previous {} keys", self.path, self.members.len())),
+            Ok(_) => log(&format!(
+                "keys reload REFUSED: {} has no members; keeping the previous {} keys",
+                self.path,
+                self.members.len()
+            )),
+            Err(e) => log(&format!(
+                "keys reload failed ({}): {e}; keeping the previous {} keys",
+                self.path,
+                self.members.len()
+            )),
         }
         // Mark this mtime as seen either way, so a broken file doesn't re-log every handshake;
         // the next EDIT (new mtime) triggers another attempt.
@@ -105,9 +120,13 @@ impl Config {
             .with_context(|| format!("reading keys file {keys_path}"))?;
         let kf: KeysFile = toml::from_str(&text).context("parsing keys file")?;
         if kf.members.is_empty() {
-            bail!("no keys configured in {keys_path}");   // startup still hard-fails: never start keyless
+            bail!("no keys configured in {keys_path}"); // startup still hard-fails: never start keyless
         }
-        let mut keys = LiveKeys { path: keys_path, mtime: None, members: kf.members };
+        let mut keys = LiveKeys {
+            path: keys_path,
+            mtime: None,
+            members: kf.members,
+        };
         keys.mtime = keys.file_mtime();
         Ok(Config {
             keys: Mutex::new(keys),
@@ -132,10 +151,7 @@ fn ct_eq(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
         return false; // keys are fixed-length, so a length check leaks nothing useful
     }
-    let mut diff = 0u8;
-    for i in 0..a.len() {
-        diff |= a[i] ^ b[i];
-    }
+    let diff = a.iter().zip(b).fold(0u8, |d, (x, y)| d | (x ^ y));
     diff == 0
 }
 
@@ -155,7 +171,7 @@ enum Backend {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cfg = Arc::new(Config::load()?);
-    let listen = std::env::var("TUNNEL_LISTEN").unwrap_or_else(|_| "0.0.0.0:9090".into());
+    let listen = std::env::var("TUNNEL_LISTEN").unwrap_or_else(|_| "127.0.0.1:9090".into());
     let listener = TcpListener::bind(&listen)
         .await
         .with_context(|| format!("binding {listen}"))?;
@@ -183,6 +199,9 @@ async fn main() -> Result<()> {
     }
 }
 
+// The handshake callback type (Result<Response, ErrorResponse>) is tungstenite's, so its large Err
+// variant is not ours to shrink.
+#[allow(clippy::result_large_err)]
 async fn handle(stream: TcpStream, peer: SocketAddr, cfg: Arc<Config>) -> Result<()> {
     // Fast path for the ALB target-group health check: a plain `GET /healthz` (not a WS upgrade).
     // We peek WITHOUT consuming, so a real WS request still reaches the handshake fully intact.
@@ -246,7 +265,9 @@ async fn handle(stream: TcpStream, peer: SocketAddr, cfg: Arc<Config>) -> Result
         Backend::Realm => (cfg.realm.clone(), "realm"),
         Backend::World => (cfg.world.clone(), "world"),
     };
-    log(&format!("ACCEPT owner={owner} peer={peer} -> {which} ({addr})"));
+    log(&format!(
+        "ACCEPT owner={owner} peer={peer} -> {which} ({addr})"
+    ));
 
     let tcp = TcpStream::connect(&addr)
         .await
@@ -288,4 +309,73 @@ async fn relay(mut ws: tokio_tungstenite::WebSocketStream<TcpStream>, tcp: TcpSt
         }
     }
     let _ = ws.close(None).await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn keys_file(name: &str, text: &str) -> String {
+        let dir =
+            std::env::temp_dir().join(format!("warcraft-tunnel-{}-{name}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("keys.toml");
+        std::fs::write(&p, text).unwrap();
+        p.to_string_lossy().into_owned()
+    }
+
+    fn entry(owner: &str, key: &str) -> KeyEntry {
+        KeyEntry {
+            owner: owner.into(),
+            key: key.into(),
+        }
+    }
+
+    #[test]
+    fn constant_time_compare() {
+        assert!(ct_eq(b"abc", b"abc"));
+        assert!(!ct_eq(b"abc", b"abd"));
+        assert!(!ct_eq(b"abc", b"abcd"));
+        assert!(ct_eq(b"", b""));
+    }
+
+    #[test]
+    fn a_key_names_its_owner() {
+        let k = LiveKeys {
+            path: String::new(),
+            mtime: None,
+            members: vec![entry("a", "k1"), entry("b", "k2")],
+        };
+        assert_eq!(k.owner_for("k2").as_deref(), Some("b"));
+        assert_eq!(k.owner_for("k3"), None);
+        assert_eq!(k.owner_for(""), None);
+    }
+
+    #[test]
+    fn reload_takes_a_good_file_and_keeps_the_old_keys_on_a_bad_one() {
+        let path = keys_file(
+            "reload",
+            "[[members]]\nowner = \"a\"\nkey = \"k1\"\n[[members]]\nowner = \"b\"\nkey = \"k2\"\n",
+        );
+        let mut k = LiveKeys {
+            path: path.clone(),
+            mtime: None,
+            members: vec![entry("old", "k0")],
+        };
+        k.reload_if_changed();
+        assert_eq!(
+            (k.members.len(), k.owner_for("k2").as_deref()),
+            (2, Some("b"))
+        );
+        for bad in ["members = []\n", "not toml [[", ""] {
+            std::fs::write(&path, bad).unwrap();
+            k.mtime = None; // as if the edit changed the mtime
+            k.reload_if_changed();
+            assert_eq!(k.members.len(), 2, "kept the previous keys after {bad:?}");
+        }
+        std::fs::remove_file(&path).unwrap();
+        k.mtime = Some(SystemTime::UNIX_EPOCH);
+        k.reload_if_changed();
+        assert_eq!(k.members.len(), 2, "a missing file keeps the previous keys");
+    }
 }

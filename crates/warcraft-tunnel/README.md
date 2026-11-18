@@ -50,13 +50,44 @@ mid-edit can't lock everyone out). Startup still refuses to run without valid ke
 | Var | Default | Notes |
 |---|---|---|
 | `KEYS_FILE` | `keys.toml` | mounted from `env_info/keys.toml` |
-| `TUNNEL_LISTEN` | `0.0.0.0:9090` | the ALB target port |
+| `TUNNEL_LISTEN` | `127.0.0.1:9090` | the ALB target port; the image sets `0.0.0.0:9090` (only the ALB reaches it, on the private network) |
 | `REALMD_ADDR` | `127.0.0.1:3724` | `realmd:3724` under compose |
 | `WORLD_ADDR` | `127.0.0.1:8085` | `mangosd:8085` under compose |
 
 ## Build / run
 
+This crate lives in the benilla workspace (it was the `warcraft-tunnel` repo; history kept by
+`git subtree`). Build from the workspace root:
+
 ```sh
-cargo build --release                      # local
-docker build -t warcraft-tunnel .          # image (deployed beside vmangos in compose)
+cargo build --release -p warcraft-tunnel                                # -> target/release/bridge
+cargo test -p warcraft-tunnel                                           # key check and hot reload
+docker build -f crates/warcraft-tunnel/Dockerfile -t warcraft-tunnel .  # image (beside vmangos in compose)
 ```
+
+The image name, its environment variables and the `keys.toml` mount are unchanged, so a compose
+file that ran the old image runs this one.
+
+## Client side: one file turns the tunnel on
+
+The GUI client (`benilla-app`) and the headless bots (`warcraft-army`) read the same file. With it
+they connect through the bridge; without it they dial `realmd` / `mangosd` directly, as before.
+
+```toml
+# ~/.config/benilla/tunnel.toml  (chmod 600; never commit it)
+endpoint  = "wss://<domain>"     # or ws://127.0.0.1:9090 for a local bridge
+base_path = "/<special_url>"     # may be empty
+key       = "<your member key>"
+```
+
+Where the client looks, first hit wins (`benilla-protocol/src/tunnel_config.rs`):
+
+1. `BENILLA_TUNNEL_CONFIG`: the path of the file;
+2. `ARMY_TUNNEL_CONFIG`: the army's older name for it;
+3. `BENILLA_TUNNEL_URL` + `BENILLA_TUNNEL_KEY` (+ `BENILLA_TUNNEL_PATH`): the older environment-only form;
+4. `$XDG_CONFIG_HOME/benilla/tunnel.toml`, else `~/.config/benilla/tunnel.toml` (`%APPDATA%\benilla\tunnel.toml` on Windows).
+
+At the first connect the client prints one line, `tunnel: connecting through <endpoint> (settings
+from <file>)`; never the key or the path. A file that is named but broken (no key, not a
+`ws://`/`wss://` endpoint) gets a line on stderr and the connect stays direct. A file readable by
+others gets a warning to `chmod 600` it.

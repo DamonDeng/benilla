@@ -6,6 +6,7 @@ pub mod events;
 pub mod guid;
 pub mod messages;
 pub mod transport;
+pub mod tunnel_config;
 pub mod wire;
 pub mod world;
 pub use auth::{AuthReject, LogonReply};
@@ -14,13 +15,14 @@ pub use events::{
     RealmListEmptied, RosterCause, SessionEnd, SessionEvent, SessionEventKind, TransportClock,
 };
 pub use messages::field;
-pub use transport::{Leg, Transport, TunnelConfig, WsTunnelTransport};
 pub use messages::{
     AttackSwingError, CharCreateReq, CharEnumItem, Character, CorpseLook, CreateSpline, ItemInfo,
     JumpInfo, MonsterMoveFacing, MoveMode, MoverState, ObjectFields, OwnerFallback, RelayVerb,
     ServerPacket, SpeedKind, SplineMode, TransportPose, WowTime, CHARACTER_FLAG_GHOST,
     CHARACTER_FLAG_HIDE_CLOAK, CHARACTER_FLAG_HIDE_HELM, CHARACTER_FLAG_RENAME,
 };
+pub use transport::{Leg, Transport, TunnelConfig, WsTunnelTransport};
+pub use tunnel_config::TunnelSource;
 pub use world::{
     observe_sends, CharListFailed, LinkTraffic, SendObserver, Unparsed, WorldAuthReject,
     WorldConnectEvent, WorldReader, WorldSession, WorldWriter, WORLD_PORT,
@@ -421,8 +423,9 @@ fn logon_with_pin_impl(
                 Some(cfg) => Transport::connect_tunnel(cfg, Leg::Realm)
                     .context("opening the realm tunnel")?,
                 None => {
-                    let (target, address) =
-                        tcp_dial.as_ref().expect("tcp dial present when not tunnelling");
+                    let (target, address) = tcp_dial
+                        .as_ref()
+                        .expect("tcp dial present when not tunnelling");
                     Transport::Tcp(connect(*target, address)?)
                 }
             };
