@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use benilla_protocol::messages::{
-    Character, CharCreateReq, CHAR_CREATE_NAME_IN_USE, CHAR_CREATE_SERVER_LIMIT,
+    CharCreateReq, Character, CHAR_CREATE_NAME_IN_USE, CHAR_CREATE_SERVER_LIMIT,
     CHAR_CREATE_SUCCESS,
 };
 use benilla_protocol::{
@@ -96,14 +96,19 @@ impl Session {
     /// Authenticate against realmd, connect to the realm's world server, and read the roster.
     /// Leaves the session parked at character select (as the glue screens are).
     pub fn login(acct: &Account) -> Result<Self> {
-        // Optional wss-tunnel mode: when `ARMY_TUNNEL_CONFIG` names a tunnel TOML, both the realm
+        // Optional wss-tunnel mode: when a tunnel file is configured (see `tunnel_config`), both the realm
         // and world legs ride the bridge; otherwise it's a direct TCP connect to the realmlist
         // (the unchanged default).
         let tunnel = tunnel_config();
 
         let l = match tunnel.as_ref() {
             Some(cfg) => logon_tunneled(cfg, &acct.user, &acct.pass, auth::LOCALE_TAG_EN_US),
-            None => logon(&acct.realmlist, &acct.user, &acct.pass, auth::LOCALE_TAG_EN_US),
+            None => logon(
+                &acct.realmlist,
+                &acct.user,
+                &acct.pass,
+                auth::LOCALE_TAG_EN_US,
+            ),
         }
         .with_context(|| format!("realmd logon for {}", acct.user))?;
 
@@ -156,7 +161,8 @@ impl Session {
     /// Set a short socket read timeout for the in-world loop, so `recv_events` paces the loop when
     /// the stream is quiet and returns promptly so movement and commands stay responsive.
     pub fn ready_stream(&mut self) -> Result<()> {
-        self.inner.set_read_timeout(Some(Duration::from_millis(100)))
+        self.inner
+            .set_read_timeout(Some(Duration::from_millis(100)))
     }
 
     /// Read one inbound packet (blocking up to the stream read timeout) and decode it into session
@@ -226,44 +232,11 @@ fn host_of(realmlist: &str) -> &str {
     benilla_protocol::host_port(realmlist, WORLD_PORT).0
 }
 
-/// The optional `wss`-tunnel config, from the file named by `ARMY_TUNNEL_CONFIG`, or `None` for the
-/// default direct-TCP connect. The file is a tiny TOML — `endpoint = "wss://…"`,
-/// `base_path = "/…"`, `key = "…"` — parsed by hand to avoid a TOML dependency in the army. The
-/// `key` is a SECRET bearer token; keep the file out of the repo (see `env_info/`).
+/// The optional `wss`-tunnel config: the same tunnel file the GUI client reads (`BENILLA_TUNNEL_CONFIG`,
+/// the older `ARMY_TUNNEL_CONFIG`, or the default location; see `benilla_protocol::tunnel_config`),
+/// or `None` for the default direct-TCP connect.
 fn tunnel_config() -> Option<TunnelConfig> {
-    let path = std::env::var("ARMY_TUNNEL_CONFIG").ok()?;
-    let text = match std::fs::read_to_string(&path) {
-        Ok(t) => t,
-        Err(e) => {
-            eprintln!("army: cannot read ARMY_TUNNEL_CONFIG {path}: {e}; using direct TCP");
-            return None;
-        }
-    };
-    let (mut endpoint, mut base_path, mut key) = (String::new(), String::new(), String::new());
-    for line in text.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        if let Some((k, v)) = line.split_once('=') {
-            let v = v.trim().trim_matches('"').to_string();
-            match k.trim() {
-                "endpoint" => endpoint = v,
-                "base_path" => base_path = v,
-                "key" => key = v,
-                _ => {}
-            }
-        }
-    }
-    if endpoint.is_empty() || key.is_empty() {
-        eprintln!("army: ARMY_TUNNEL_CONFIG is missing endpoint or key; using direct TCP");
-        return None;
-    }
-    Some(TunnelConfig {
-        endpoint,
-        base_path,
-        key,
-    })
+    TunnelConfig::configured()
 }
 
 /// `ChrRaces.dbc` id → name, for display.

@@ -51,8 +51,8 @@ impl Leg {
 }
 
 /// How to reach the `wss` bridge. The per-identity `key` is a bearer secret and must not be
-/// hard-coded — pass it from the app's config (e.g. the army's `army-secrets.toml`) or the
-/// environment via [`TunnelConfig::from_env`].
+/// hard-coded: the client and the army read it from the tunnel file ([`TunnelConfig::configured`],
+/// `tunnel_config.rs`); [`TunnelConfig::from_env`] is the older environment-only form.
 #[derive(Debug, Clone)]
 pub struct TunnelConfig {
     /// Scheme + host[:port], e.g. `wss://wow.agentnumber47.com` or `ws://127.0.0.1:9090` (plain
@@ -66,7 +66,8 @@ pub struct TunnelConfig {
 }
 
 impl TunnelConfig {
-    /// Read a config from the environment, or `None` if the tunnel isn't configured:
+    /// Read a config from the environment only, or `None` if the tunnel isn't configured (the
+    /// older form; [`TunnelConfig::configured`] also reads it, after the tunnel file):
     /// `BENILLA_TUNNEL_URL` (required), `BENILLA_TUNNEL_KEY` (required), `BENILLA_TUNNEL_PATH`
     /// (optional base path). Absence of the first two means "use direct TCP".
     pub fn from_env() -> Option<Self> {
@@ -204,7 +205,7 @@ impl Read for WsTunnelTransport {
                 Err(tungstenite::Error::ConnectionClosed | tungstenite::Error::AlreadyClosed) => {
                     return Ok(0)
                 }
-                Err(e) => return Err(io::Error::new(io::ErrorKind::Other, e)),
+                Err(e) => return Err(io::Error::other(e)),
             }
         }
     }
@@ -213,9 +214,7 @@ impl Read for WsTunnelTransport {
 impl Write for WsTunnelTransport {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         // `send` writes the frame and flushes it.
-        self.ws
-            .send(Message::Binary(buf.to_vec()))
-            .map_err(to_io)?;
+        self.ws.send(Message::Binary(buf.to_vec())).map_err(to_io)?;
         Ok(buf.len())
     }
 
@@ -237,14 +236,16 @@ impl Write for WsTunnelTransport {
 pub enum Transport {
     /// The default: a direct TCP socket, byte-for-byte the prior behaviour.
     Tcp(TcpStream),
-    /// The `wss` bridge tunnel.
-    Ws(WsTunnelTransport),
+    /// The `wss` bridge tunnel, boxed: the WebSocket state is ~1.3 KB against the socket's 4 bytes.
+    Ws(Box<WsTunnelTransport>),
 }
 
 impl Transport {
     /// Open a tunnelled transport for `leg`.
     pub fn connect_tunnel(cfg: &TunnelConfig, leg: Leg) -> Result<Self> {
-        Ok(Transport::Ws(WsTunnelTransport::connect(cfg, leg)?))
+        Ok(Transport::Ws(Box::new(WsTunnelTransport::connect(
+            cfg, leg,
+        )?)))
     }
 
     /// Set the read timeout on whichever backing socket this is.
@@ -319,7 +320,7 @@ impl Write for Transport {
 fn to_io(e: tungstenite::Error) -> io::Error {
     match e {
         tungstenite::Error::Io(io) => io,
-        other => io::Error::new(io::ErrorKind::Other, other),
+        other => io::Error::other(other),
     }
 }
 
@@ -395,9 +396,10 @@ impl WsWriteHalf {
     /// Stop the worker and take the `WsTunnelTransport` back, for `rejoin` on the same connection.
     fn reclaim(mut self) -> io::Result<WsTunnelTransport> {
         self.stop.store(true, Ordering::SeqCst);
-        let wst = self.reclaim.recv().map_err(|_| {
-            io::Error::new(io::ErrorKind::Other, "tunnel worker did not return the transport")
-        })?;
+        let wst = self
+            .reclaim
+            .recv()
+            .map_err(|_| io::Error::other("tunnel worker did not return the transport"))?;
         if let Some(join) = self.join.take() {
             let _ = join.join();
         }
@@ -518,7 +520,7 @@ impl Transport {
                 Ok((ReadHalf::Tcp(read), WriteHalf::Tcp(s)))
             }
             Transport::Ws(wst) => {
-                let (r, w) = spawn_ws_split(wst);
+                let (r, w) = spawn_ws_split(*wst);
                 Ok((ReadHalf::Ws(r), WriteHalf::Ws(w)))
             }
         }
@@ -531,7 +533,7 @@ impl WriteHalf {
     pub(crate) fn into_transport(self) -> io::Result<Transport> {
         match self {
             WriteHalf::Tcp(s) => Ok(Transport::Tcp(s)),
-            WriteHalf::Ws(w) => Ok(Transport::Ws(w.reclaim()?)),
+            WriteHalf::Ws(w) => Ok(Transport::Ws(Box::new(w.reclaim()?))),
         }
     }
 }

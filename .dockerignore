@@ -1,0 +1,11 @@
+# Docker build context (crates/warcraft-tunnel/Dockerfile builds from the workspace root).
+target/
+.git/
+WoW/
+extracted/
+out/
+wow-addons-vanilla/
+benilla-config/
+**/*.env
+**/keys.toml
+**/tunnel.toml

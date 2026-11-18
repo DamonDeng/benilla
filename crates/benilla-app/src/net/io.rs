@@ -437,7 +437,7 @@ fn query(
         };
         // A hidden re-dial for the realm list: no logon on the screen to tell the states to. Over
         // the tunnel this re-dials the bridge's realm leg (no PIN keypad on a tunnelled logon).
-        let redial = match benilla_protocol::TunnelConfig::from_env() {
+        let redial = match benilla_protocol::TunnelConfig::configured() {
             Some(cfg) => benilla_protocol::logon_tunneled(&cfg, &req.user, &req.pass, req.locale),
             None => benilla_protocol::logon_with_pin(
                 &req.host,
@@ -637,7 +637,7 @@ fn run(
         let mut superseded = None;
         // Over the tunnel, logon is a `wss` connection to the bridge's realm leg; it carries no PIN
         // keypad (a tunnelled logon cannot press one). Otherwise the direct realmd dial, unchanged.
-        let logon = match benilla_protocol::TunnelConfig::from_env() {
+        let logon = match benilla_protocol::TunnelConfig::configured() {
             Some(cfg) => benilla_protocol::logon_tunneled(&cfg, &req.user, &req.pass, req.locale),
             None => benilla_protocol::logon_with_pin(
                 &req.host,
@@ -817,7 +817,7 @@ fn world(
         };
         // Over the tunnel the world leg is a `wss` connection to the bridge; otherwise a direct
         // dial to the realm's address. The queue/cancel callback is preserved either way.
-        let connect_result = match benilla_protocol::TunnelConfig::from_env() {
+        let connect_result = match benilla_protocol::TunnelConfig::configured() {
             Some(cfg) => WorldSession::connect_queued_tunneled(
                 &cfg,
                 &req.user,
