@@ -97,8 +97,9 @@ screen, which remembers it. Credentials go in at the login screen, or set `WOW_U
 to skip it.
 
 Settings, screenshots and addons live in `benilla-config/` at the repo root: a 1.12 addon goes in
-`benilla-config/AddOns/`. [`docs/CONTRIBUTING.md`](docs/CONTRIBUTING.md) has the rest, from the
-player build to the tests.
+`benilla-config/AddOns/`. [`docs/build_and_run_guidance.md`](docs/build_and_run_guidance.md) has
+the Windows forms, the `wss` tunnel settings and login troubleshooting.
+[`docs/CONTRIBUTING.md`](docs/CONTRIBUTING.md) has the rest, from the player build to the tests.
 
 ## Contributing
 
