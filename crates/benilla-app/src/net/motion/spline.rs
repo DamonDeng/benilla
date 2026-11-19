@@ -1076,10 +1076,11 @@ pub(in crate::net) fn mark_swimming_creatures(
     mut last_epoch: Local<Option<u64>>,
 ) {
     // A collider epoch change (liquid streams with the colliders) drops every stamp.
+    // `try_*` here and below: a unit leaving view can despawn before the commands apply.
     let now = epoch.get();
     if last_epoch.replace(now) != Some(now) {
         for e in &stamped {
-            commands.entity(e).remove::<SwimEvaluated>();
+            commands.entity(e).try_remove::<SwimEvaluated>();
         }
     }
     for (e, net, t, collision, store, marked, evaluated, splined, clamped, embodied, motion) in
@@ -1096,7 +1097,7 @@ pub(in crate::net) fn mark_swimming_creatures(
             continue; // unstamped, so retried until the claim lands
         }
         if !evaluated {
-            commands.entity(e).insert(SwimEvaluated);
+            commands.entity(e).try_insert(SwimEvaluated);
         }
         let wow = bevy_to_wow(t.translation);
         let depth = world
@@ -1108,9 +1109,9 @@ pub(in crate::net) fn mark_swimming_creatures(
         let swimming = creature_swim_state(marked, depth, boundary, flags);
         if swimming != marked {
             if swimming {
-                commands.entity(e).insert(CreatureSwimming);
+                commands.entity(e).try_insert(CreatureSwimming);
             } else {
-                commands.entity(e).remove::<CreatureSwimming>();
+                commands.entity(e).try_remove::<CreatureSwimming>();
             }
         }
     }

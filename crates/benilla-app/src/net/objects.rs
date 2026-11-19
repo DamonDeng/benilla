@@ -1407,14 +1407,15 @@ fn unit_move(
         // The server's pose supersedes a stale spline, and takes the unit's Z back from the
         // clamp a path handed it to ([`super::motion::spline::ground_derived`]), and its swim
         // state from the water-at-feet mark: the relay's word carries it (`0x618de7`). The mark's
-        // stamp goes too, so a body the mark still derives asks again.
+        // stamp goes too, so a body the mark still derives asks again. `try_remove`: a unit
+        // leaving view can despawn before the commands apply.
         commands
             .entity(e)
-            .remove::<Spline>()
-            .remove::<HeldSpline>()
-            .remove::<super::motion::spline::GroundClamped>()
-            .remove::<super::motion::CreatureSwimming>()
-            .remove::<super::motion::spline::SwimEvaluated>();
+            .try_remove::<Spline>()
+            .try_remove::<HeldSpline>()
+            .try_remove::<super::motion::spline::GroundClamped>()
+            .try_remove::<super::motion::CreatureSwimming>()
+            .try_remove::<super::motion::spline::SwimEvaluated>();
         if let Ok(mut rm) = remote_motion.get_mut(e) {
             // The chain reads the state before this move applies, as the reference times the
             // packet off the live `[esi+0x40]`/`[esi+0x150]`.
