@@ -895,6 +895,88 @@ fn a_command_ready_with_an_install_goes_out_on_the_new_writer() {
     }
 }
 
+/// A world stream that fails ends its session's writer with it: after [`WriterSwap::Lost`] the
+/// write thread holds no writer, so neither a command nor the keepalive goes out on the dead link,
+/// and the next install sends again.
+#[test]
+fn a_lost_stream_sends_nothing_more_on_its_writer() {
+    use super::{apply_swap, writer_loop, SEND_WARN_CAP};
+    use crate::net::ClientCommand;
+    const KEY: [u8; benilla_srp::SESSION_KEY_LENGTH] = [9; benilla_srp::SESSION_KEY_LENGTH];
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap().to_string();
+    let (keys_tx, keys_rx) = crossbeam_channel::unbounded();
+    keys_tx.send(KEY).unwrap();
+    let world = fake::world(listener, keys_rx);
+    let writer = || {
+        benilla_protocol::WorldSession::connect(&addr, fake::USER, KEY)
+            .unwrap()
+            .into_split()
+            .unwrap()
+    };
+
+    // The swap itself: the writer goes, the keepalive with it, one warning left.
+    let clock = Mutex::new(PingClock::default());
+    let (_reader, w) = writer();
+    let (mut held, mut warned, mut tick) = (None, 0, crossbeam_channel::never());
+    let install = WriterSwap::Install {
+        writer: w,
+        fresh_link: true,
+    };
+    apply_swap(install, &mut held, &mut warned, &mut tick, &clock);
+    assert!(held.is_some());
+    apply_swap(WriterSwap::Lost, &mut held, &mut warned, &mut tick, &clock);
+    assert!(held.is_none(), "the lost session's writer is dropped");
+    assert_eq!(
+        warned,
+        SEND_WARN_CAP - 1,
+        "one warning left for the dead session"
+    );
+
+    // Through the write thread: a command after the loss goes nowhere, one after a new install
+    // goes out on the new writer.
+    let (cmd_tx, cmd_rx) = crossbeam_channel::unbounded::<ClientCommand>();
+    let (swap_tx, swap_rx) = crossbeam_channel::unbounded::<WriterSwap>();
+    let thread_clock = std::sync::Arc::new(Mutex::new(PingClock::default()));
+    thread::spawn(move || writer_loop(&cmd_rx, swap_rx, &thread_clock));
+    let played_in = |session: usize| {
+        world
+            .session_packets
+            .lock()
+            .unwrap()
+            .get(session)
+            .is_some_and(|packets| {
+                packets
+                    .iter()
+                    .any(|p| p[2..4] == opcode::CMSG_PLAYED_TIME.to_le_bytes())
+            })
+    };
+    let (_lost_reader, lost) = writer();
+    swap_tx
+        .send(WriterSwap::Install {
+            writer: lost,
+            fresh_link: true,
+        })
+        .unwrap();
+    swap_tx.send(WriterSwap::Lost).unwrap();
+    cmd_tx.send(ClientCommand::PlayedTime).unwrap();
+    let (_next_reader, next) = writer();
+    // The command is taken before this install, since the write thread drains swaps first.
+    thread::sleep(std::time::Duration::from_millis(50));
+    swap_tx
+        .send(WriterSwap::Install {
+            writer: next,
+            fresh_link: true,
+        })
+        .unwrap();
+    cmd_tx.send(ClientCommand::PlayedTime).unwrap();
+    wait_until(|| played_in(2), "the command went out on the next writer");
+    assert!(
+        !played_in(1),
+        "a command went out on the writer of a lost session"
+    );
+}
+
 /// A refused character login returns the same way (`SMSG_CHARACTER_LOGIN_FAILED` → `0x5aad70` →
 /// `0x401ee0(1, 1, 1)`): the session is kept, and the roster comes only when the screen asks (from
 /// the refusal dialog's `StatusDialogClick`, `0x46b767` → `0x46b880`), on the same link, where the
