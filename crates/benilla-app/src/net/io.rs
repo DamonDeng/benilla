@@ -257,6 +257,9 @@ pub(super) enum WriterSwap {
     /// The world session is over and the link kept: the writer goes back to the read thread on
     /// this reply, and commands drop until the next install.
     Reclaim(Sender<WorldWriter>),
+    /// The world stream failed and the link is gone: the writer is dropped, the keepalive stops,
+    /// and commands drop, with one warning, until the next install.
+    Lost,
 }
 
 /// Everything [`spawn_net`] hands the app.
@@ -1095,10 +1098,16 @@ fn world(
             }
             bevy::log::info!("net: connected to {world_addr}");
 
-            let reason = match stream(&mut reader, park_rx, events_tx, ping_clock, tails_announced)?
-            {
-                StreamEnd::Exit => return Ok(WorldEnd::Cycle(Cycle::Exit)),
-                StreamEnd::Back(reason) => reason,
+            let streamed = stream(&mut reader, park_rx, events_tx, ping_clock, tails_announced);
+            let reason = match streamed {
+                Ok(StreamEnd::Exit) => return Ok(WorldEnd::Cycle(Cycle::Exit)),
+                Ok(StreamEnd::Back(reason)) => reason,
+                Err(e) => {
+                    // The link is gone: the write thread drops its writer and the keepalive with
+                    // it before the app hears of the loss, so nothing goes out on a dead session.
+                    let _ = writer_tx.send(WriterSwap::Lost);
+                    return Err(e);
+                }
             };
             // The world is torn down (`0x401ee0`'s shutdown) and the link kept: the app's teardown
             // edge, then the session joined again at the character park.
@@ -1324,6 +1333,12 @@ fn apply_swap(
                 let _ = reply.send(w);
             }
         }
+        WriterSwap::Lost => {
+            *ping_tick = crossbeam_channel::never();
+            *writer = None;
+            // One more warning at most for the dead session: the first command it drops.
+            *warned = (*warned).max(SEND_WARN_CAP - 1);
+        }
     }
 }
 
@@ -1368,9 +1383,11 @@ pub(super) fn writer_loop(
                         (c.sequence, c.last_rtt_ms.unwrap_or(0))
                     };
                     if let Err(e) = w.ping(sequence, last_rtt) {
+                        // A failed write means the link is broken: one line says so, and the
+                        // rest of this writer's failures go unlogged.
                         if warned < SEND_WARN_CAP {
                             bevy::log::warn!("net: ping send failed: {e:#}");
-                            warned += 1;
+                            warned = SEND_WARN_CAP;
                         }
                     }
                 }
@@ -2084,9 +2101,10 @@ pub(super) fn writer_loop(
                     if benilla_assets::trace::enabled() {
                         benilla_assets::trace::line("wire", &format!("SEND FAILED: {e:#}"));
                     }
+                    // One line per broken writer, as for the keepalive.
                     if warned < SEND_WARN_CAP {
                         bevy::log::warn!("net: send failed: {e:#}");
-                        warned += 1;
+                        warned = SEND_WARN_CAP;
                     }
                 }
             },
