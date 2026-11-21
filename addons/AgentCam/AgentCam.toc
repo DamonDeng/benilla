@@ -1,0 +1,6 @@
+## Interface: 11200
+## Title: AgentCam
+## Notes: GM spectator camera for watching agent characters (/ac)
+## Author: yourlin (workshop)
+## SavedVariables: AgentCamDB
+AgentCam.lua
