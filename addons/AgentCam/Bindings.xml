@@ -1,0 +1,16 @@
+<Bindings>
+	<Binding name="AGENTCAM_1" header="AGENTCAM">AgentCam_SwitchNth(1)</Binding>
+	<Binding name="AGENTCAM_2">AgentCam_SwitchNth(2)</Binding>
+	<Binding name="AGENTCAM_3">AgentCam_SwitchNth(3)</Binding>
+	<Binding name="AGENTCAM_4">AgentCam_SwitchNth(4)</Binding>
+	<Binding name="AGENTCAM_5">AgentCam_SwitchNth(5)</Binding>
+	<Binding name="AGENTCAM_NEXT">AgentCam_Cycle(1)</Binding>
+	<Binding name="AGENTCAM_PREV">AgentCam_Cycle(-1)</Binding>
+	<Binding name="AGENTCAM_RESET">AgentCam_Reset()</Binding>
+	<Binding name="AGENTCAM_MODE">AgentCam_CycleMode()</Binding>
+	<Binding name="AGENTCAM_AUTO">AgentCam_ToggleAuto()</Binding>
+	<Binding name="AGENTCAM_GOTARGET">AgentCam_Go()</Binding>
+	<Binding name="AGENTCAM_CAM">AgentCam_ToggleCamera()</Binding>
+	<Binding name="AGENTCAM_INVIS">AgentCam_ToggleInvis()</Binding>
+	<Binding name="AGENTCAM_SHOT">AgentCam_Screenshot()</Binding>
+</Bindings>
