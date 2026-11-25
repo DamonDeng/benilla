@@ -402,6 +402,15 @@ end
 -- what was seen last, dimmed once stale. Experience is the player's alone (UnitXP("player")).
 local stats = {} -- [lower name] = { hp, hpMax, mp, mpMax, ptype, dead, t }
 local STALE = 10 -- seconds: older readings draw dimmed
+-- The class icons on the character-create sheet, 4 a row (the glue's CLASS_ICON_TCOORDS).
+local CLASS_SHEET = "Interface\\Glues\\CharacterCreate\\UI-CharacterCreate-Classes"
+local CLASS_TCOORDS = {
+	WARRIOR = { 0, 0.25, 0, 0.25 }, MAGE = { 0.25, 0.49609375, 0, 0.25 },
+	ROGUE = { 0.49609375, 0.7421875, 0, 0.25 }, DRUID = { 0.7421875, 0.98828125, 0, 0.25 },
+	HUNTER = { 0, 0.25, 0.25, 0.5 }, SHAMAN = { 0.25, 0.49609375, 0.25, 0.5 },
+	PRIEST = { 0.49609375, 0.7421875, 0.25, 0.5 }, WARLOCK = { 0.7421875, 0.98828125, 0.25, 0.5 },
+	PALADIN = { 0, 0.25, 0.5, 0.75 },
+}
 local UpdateBars -- defined with the frame
 
 local function Capture(unit)
@@ -413,6 +422,8 @@ local function Capture(unit)
 		if db.names[i] and Lower(db.names[i]) == key then ours = true break end
 	end
 	if not ours then return end
+	local _, class = UnitClass(unit)
+	if class then db.classes[key] = class end -- saved: the icon shows before the agent is seen again
 	stats[key] = {
 		hp = UnitHealth(unit), hpMax = UnitHealthMax(unit),
 		mp = UnitMana(unit), mpMax = UnitManaMax(unit), ptype = UnitPowerType(unit),
@@ -824,6 +835,9 @@ local function BuildFrame()
 			return bar
 		end
 		row.hp, row.mp = Bar(9), Bar(7)
+		row.class = row:CreateTexture(nil, "ARTWORK")
+		row.class:SetWidth(18)
+		row.class:SetHeight(18)
 		row.icons = {}
 		for k, a in ipairs(ROW_ACTIONS) do
 			local action = a[1]
@@ -872,7 +886,8 @@ local function BuildFrame()
 	local MIN_W = 2 * PAD + 7 * ICON + 6 * 2
 	local ICONS_W = table.getn(ROW_ACTIONS) * (RI + 2)
 	local BAR_W = 56
-	local function BarsW() return (db.bars ~= false) and (BAR_W + 3) or 0 end
+	local CLASS_W = 20
+	local function BarsW() return (db.bars ~= false) and (CLASS_W + BAR_W + 3) or 0 end
 	local measure = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
 	measure:Hide()
 	local function FitWidth(list)
@@ -894,14 +909,18 @@ local function BuildFrame()
 			-- Two bars right of the name: health over power.
 			row.hp:ClearAllPoints()
 			row.mp:ClearAllPoints()
+			row.class:ClearAllPoints()
 			if bw > 0 then
-				row.hp:SetPoint("TOPLEFT", row, "TOPLEFT", nw + 2, -2)
+				row.class:SetPoint("TOPLEFT", row, "TOPLEFT", nw + 2, -1)
+				row.class:Show()
+				row.hp:SetPoint("TOPLEFT", row, "TOPLEFT", nw + 2 + CLASS_W, -2)
 				row.hp:SetWidth(BAR_W)
 				row.mp:SetPoint("TOPLEFT", row.hp, "BOTTOMLEFT", 0, -1)
 				row.mp:SetWidth(BAR_W)
 				row.hp:Show()
 				row.mp:Show()
 			else
+				row.class:Hide()
 				row.hp:Hide()
 				row.mp:Hide()
 			end
@@ -978,7 +997,17 @@ local function BuildFrame()
 		local now = GetTime()
 		for i = 1, MAX_AGENTS do
 			local row = buttons[i]
-			local st = row.slot and stats[Lower(db.names[row.slot])]
+			local key = row.slot and Lower(db.names[row.slot])
+			local st = key and stats[key]
+			local tc = key and CLASS_TCOORDS[db.classes[key] or ""]
+			if tc then
+				row.class:SetTexture(CLASS_SHEET)
+				row.class:SetTexCoord(tc[1], tc[2], tc[3], tc[4])
+			else
+				row.class:SetTexture("Interface\\Icons\\INV_Misc_QuestionMark")
+				row.class:SetTexCoord(0.07, 0.93, 0.07, 0.93)
+			end
+			row.class:SetAlpha((st and now - st.t <= STALE) and 1 or 0.5)
 			if st then
 				row.hp:SetValue(st.hpMax > 0 and st.hp / st.hpMax or 0)
 				if st.dead then row.hp:SetStatusBarColor(0.5, 0.5, 0.5) else row.hp:SetStatusBarColor(0.1, 0.85, 0.2) end
@@ -1454,6 +1483,7 @@ loader:SetScript("OnEvent", function()
 		end
 		if db.mode == "gm" or not db.mode then db.mode = "view" end
 		db.autoInterval = db.autoInterval or 30
+		db.classes = db.classes or {} -- [lower name] = class token, as last seen
 		if db.info == nil then db.info = true end
 		BuildFrame()
 		HookOptionsAddOnsTab()
