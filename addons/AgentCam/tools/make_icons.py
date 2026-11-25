@@ -204,6 +204,15 @@ def g_dismount():
     return [(minus(shoe, nails), WHITE), (arrow, (255, 220, 110))]
 
 
+def g_gm():
+    # A crown: GM mode.
+    crown = poly((0.18, 0.72), (0.18, 0.34), (0.35, 0.52), (0.5, 0.26), (0.65, 0.52), (0.82, 0.34), (0.82, 0.72))
+    band = rrect(0.16, 0.7, 0.84, 0.8, 0.02)
+    jewels = union(circle(0.18, 0.31, 0.045), circle(0.5, 0.22, 0.05), circle(0.82, 0.31, 0.045))
+    return [(union(crown, band), (255, 215, 90)), (jewels, WHITE),
+            (union(circle(0.35, 0.62, 0.035), circle(0.5, 0.62, 0.035), circle(0.65, 0.62, 0.035)), (200, 60, 60))]
+
+
 def g_settings():
     teeth = [poly(*[(0.5 + math.cos(a + d) * r, 0.5 + math.sin(a + d) * r)
                     for d, r in ((-0.2, 0.25), (-0.13, 0.37), (0.13, 0.37), (0.2, 0.25))])
@@ -224,6 +233,7 @@ ICONS = {
     "invis": (g_invis, (90, 100, 130), (35, 40, 60)),
     "shot": (g_shot, (210, 60, 70), (100, 20, 30)),
     "dismount": (g_dismount, (150, 95, 55), (70, 40, 20)),
+    "gm": (g_gm, (150, 40, 50), (70, 15, 25)),
     "settings": (g_settings, (120, 125, 135), (50, 52, 58)),
 }
 
