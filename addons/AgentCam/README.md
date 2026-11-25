@@ -2,7 +2,7 @@
 
 A 1.12 addon for the workshop's spectator (GM) account: switch the camera between agent
 characters, follow one with a free camera, rotate through them, and jump to any player. It uses
-only the spectator commands the server grants (`.gm visible/setview/resetview`, `.watch`,
+only the spectator commands the server grants (`.gm on/off`, `.gm visible/setview/resetview`, `.watch`,
 `.unwatch`, `.appear`, `.dismount`) and the stock 1.12 Lua API, so it runs on benilla as any
 addon does. It is not part of benilla itself: 1.12.1 has no such addon.
 
@@ -23,12 +23,16 @@ Restart the client after adding the folder or an icon; `/reload` picks up edits 
 
 ## Use
 
-- The panel (right edge, draggable) lists the ticked agents. Left-click one to switch to it,
-  right-click to teleport beside it only. The gear opens the settings.
+- The panel (right edge, draggable) lists the ticked agents, one row each: the name, then four
+  icons aimed at that agent alone: View, Follow, Watch, Teleport. Clicking the name does the
+  default mode from the settings (also what Alt-1..5 and the auto director use). The lit icon
+  shows what is engaged on which agent. Under the list: back to me, auto director, far camera,
+  invisibility, GM mode, screenshot, dismount; the invisibility and GM icons follow the server's
+  replies, whoever sent the command. The gear opens the settings.
 - Settings: `/ac config`, the gear, or the Options window's AddOns tab. Up to 20 agent slots: a
   slot counts when it is ticked **and** named; Enable all / Disable all tick every slot. Four
   are ticked on a fresh install.
-- Modes (what clicking an agent does):
+- The actions:
   - **View**: `.appear` beside it if it is not near, then `.gm setview`: its eyes.
   - **Follow**: keep your invisible body within about 10 yards of it by re-`.appear`-ing every
     2.5 s; the camera stays yours. (The client's own `/follow` is refused: GM mode re-templates
@@ -39,7 +43,7 @@ Restart the client after adding the folder or an icon; `/reload` picks up edits 
   agent's health and target.
 - Keys: `/ac keys` binds Alt-1..5 (panel agents 1-5), Alt-0 (back to me), Alt-=/Alt--
   (next/previous), Alt-M (mode), Alt-A (auto), Alt-G (teleport to target), Alt-C (camera),
-  Alt-V (invisibility), Alt-S (screenshot). They are also under AgentCam in Keybindings.
+  Alt-V (invisibility), Alt-H (GM mode), Alt-S (screenshot). They are also under AgentCam in Keybindings.
 - `/ac help` lists the commands; `/ac disable` / `/ac enable` turn the whole addon off and on.
 
 ## Icons
