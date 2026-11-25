@@ -1,0 +1,19 @@
+addons/AgentCam/AgentCam.lua
+  s_8aecc1f494ff01::t_d55042d6bbbeec 405-413,425-426,838-840,889-890,912,914-916,923,1000-1010,1486
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "a443c53419444121f2c3f77e80b9b37f731ca462",
+  "prompts": {},
+  "sessions": {
+    "s_8aecc1f494ff01": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6c77a69a-c5c7-43ef-a471-c965a23132bc",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "linyesh <linyesh@amazon.com>"
+    }
+  }
+}
