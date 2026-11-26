@@ -14,7 +14,6 @@ local SERVER_FRESH = 5 -- seconds a server record keeps an agent on source 1
 local MAX_CASTS = 8
 local MAX_CDS = 10
 local MAX_AURAS = 16
-local MAX_MEMBERS = 40
 local QUESTION = "Interface\\Icons\\INV_Misc_QuestionMark"
 
 local obs = {} -- [lower name] = record, see Get
@@ -56,7 +55,11 @@ local function Icon(icon, spell)
 		if spell and spell ~= "" and odb then odb.icons[spell] = icon end
 		return icon
 	end
-	return (spell and odb and odb.icons[spell]) or QUESTION
+	if spell and odb and odb.icons[spell] then return odb.icons[spell] end
+	-- the combat log names spells only: the table generated from Spell.dbc (AgentCamSpellIcons.lua)
+	local file = spell and AgentCam_SpellIcons and AgentCam_SpellIcons[spell]
+	if file then return "Interface\\Icons\\" .. file end
+	return QUESTION
 end
 
 local function AddCast(o, c)
@@ -70,7 +73,7 @@ local groupParts = {} -- [lower name] = { members so far } while a multi-part G 
 
 local HANDLERS = {}
 
--- U;name;CLASS;level;hp;hpMax;power;powerMax;powerType;zone;flags;target
+-- U;name;CLASS;level;hp;hpMax;power;powerMax;powerType;zone;flags;target[;combo;xp;xpMax]
 HANDLERS.U = function(f)
 	local o = Get(f[2])
 	o.class = f[3] ~= "" and string.upper(f[3]) or o.class
@@ -83,9 +86,13 @@ HANDLERS.U = function(f)
 	o.combat = string.find(flags, "c", 1, true) ~= nil
 	o.offline = string.find(flags, "o", 1, true) ~= nil
 	o.target = f[12] ~= "" and f[12] or nil
+	-- optional tail, absent from older servers
+	o.combo = f[13] and f[13] ~= "" and Num(f[13]) or nil
+	o.xp = f[14] and f[14] ~= "" and Num(f[14]) or nil
+	o.xpMax = f[15] and f[15] ~= "" and Num(f[15]) or nil
 	if AgentCam_Feed then
 		AgentCam_Feed(o.name, { class = o.class, hp = o.hp, hpMax = o.hpMax, mp = o.mp, mpMax = o.mpMax,
-			ptype = o.ptype, dead = o.dead or o.ghost })
+			ptype = o.ptype, dead = o.dead or o.ghost, offline = o.offline, xp = o.xp, xpMax = o.xpMax })
 	end
 end
 
@@ -159,17 +166,36 @@ HANDLERS.D = function(f)
 	o.cds[id] = { spell = f[4], icon = Icon(f[5], f[4]), start = GetTime() + remain - dur, dur = dur }
 end
 
--- A;name;B|D;spellId:icon:remainMs:stacks,...  (the whole list of that kind; remainMs 0: no end)
+-- A;name;B|D;[part/total;]spellId:icon:remainMs:stacks,...  (the whole list of that kind;
+-- remainMs 0: no end). One message holds about five auras, so a longer list comes in parts
+-- 1/n .. n/n, shown when the last arrives; without the part field the record is the whole list.
+local auraParts = {} -- [lower name .. kind] = { auras so far }
 HANDLERS.A = function(f)
 	local o = Get(f[2])
-	local list = {}
-	if f[4] and f[4] ~= "" then
-		for _, item in ipairs(Split(f[4], ",")) do
+	local items = f[4]
+	local _, _, part, total = string.find(f[4] or "", "^(%d+)/(%d+)$")
+	part, total = tonumber(part), tonumber(total)
+	local key = Lower(f[2]) .. (f[3] or "")
+	local list
+	if part then
+		items = f[5]
+		if part == 1 then auraParts[key] = {} end
+		list = auraParts[key] or {}
+		auraParts[key] = list
+	else
+		list = {}
+	end
+	if items and items ~= "" then
+		for _, item in ipairs(Split(items, ",")) do
 			local p = Split(item, ":")
 			local remain = Num(p[3]) / 1000
-			table.insert(list, { id = Num(p[1]), icon = Icon(p[2]), ends = remain > 0 and GetTime() + remain or nil, stacks = Num(p[4]) })
+			-- optional 5th part: the aura's name, for the tooltip and the icon table when icon is empty
+			local nm = p[5] ~= "" and p[5] or nil
+			table.insert(list, { id = Num(p[1]), spell = nm, icon = Icon(p[2], nm), ends = remain > 0 and GetTime() + remain or nil, stacks = Num(p[4]) })
 		end
 	end
+	if part and part < total then return end -- wait for the rest
+	auraParts[key] = nil
 	if f[3] == "D" then o.debuffs = list else o.buffs = list end
 	o.auraByLog = nil
 end
@@ -286,22 +312,15 @@ end
 
 ------------------------------------------------------------------------------- panel
 
-local W = 300
-local CLASS_SHEET = "Interface\\Glues\\CharacterCreate\\UI-CharacterCreate-Classes"
-local CLASS_TCOORDS = {
-	WARRIOR = { 0, 0.25, 0, 0.25 }, MAGE = { 0.25, 0.49609375, 0, 0.25 },
-	ROGUE = { 0.49609375, 0.7421875, 0, 0.25 }, DRUID = { 0.7421875, 0.98828125, 0, 0.25 },
-	HUNTER = { 0, 0.25, 0.25, 0.5 }, SHAMAN = { 0.25, 0.49609375, 0.25, 0.5 },
-	PRIEST = { 0.49609375, 0.7421875, 0.25, 0.5 }, WARLOCK = { 0.7421875, 0.98828125, 0.25, 0.5 },
-	PALADIN = { 0, 0.25, 0.5, 0.75 },
-}
-local POWER_COLORS = { [0] = { 0, 0, 1 }, [1] = { 1, 0, 0 }, [2] = { 1, 0.5, 0.25 }, [3] = { 1, 1, 0 } }
-
-local function ClassColor(class)
-	local c = class and RAID_CLASS_COLORS and RAID_CLASS_COLORS[class]
-	if c then return c.r, c.g, c.b end
-	return 0.8, 0.8, 0.8
-end
+-- Compact, one line per kind: a small label, then the icons with their time under them as the
+-- stock buff bar does. A kind with nothing to show takes no room, and the panel's height follows.
+local W = 240
+local PAD = 8
+local LABEL_W = 34 -- the label column; icons start after it
+local CAST_ICON = 20
+local SIZES = { casts = 22, cds = 22, buffs = 20, debuffs = 20 }
+local GAP = 3
+local TIME_H = 10 -- the time line under an icon
 
 local function Bar(parent, w, h)
 	local b = CreateFrame("StatusBar", nil, parent)
@@ -313,24 +332,33 @@ local function Bar(parent, w, h)
 	b.bg:SetAllPoints(b)
 	b.bg:SetTexture(0, 0, 0, 0.5)
 	b.text = b:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-	b.text:SetPoint("CENTER", b, "CENTER", 0, 0)
+	b.text:SetPoint("LEFT", b, "LEFT", 4, 0)
+	b.text:SetPoint("RIGHT", b, "RIGHT", -30, 0)
+	b.text:SetJustifyH("LEFT")
+	b.text:SetHeight(12)
+	b.right = b:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+	b.right:SetPoint("RIGHT", b, "RIGHT", -3, 0)
 	return b
 end
 
-local function SetBar(b, v, max, r, g, bl, text)
+local function SetBar(b, v, max, r, g, bl, text, right)
 	b:SetMinMaxValues(0, (max and max > 0) and max or 1)
 	b:SetValue(v or 0)
 	b:SetStatusBarColor(r, g, bl)
 	b.text:SetText(text or "")
+	b.right:SetText(right or "")
 end
 
-local function Label(parent, text)
-	local l = parent:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-	l:SetText(text)
-	return l
+-- Seconds as the stock buff bar abbreviates them: 12, 9m, 2h.
+local function Short(s)
+	s = math.floor(s)
+	if s < 60 then return tostring(s) end
+	if s < 3600 then return math.floor(s / 60) .. "m" end
+	return math.floor(s / 3600) .. "h"
 end
 
--- A row of icon buttons with a cooldown sweep and a corner text; tooltips from button.tip.
+-- A row of icon buttons with a cooldown sweep, a stack count in the corner and a time under it;
+-- tooltips from button.tip.
 local function IconRow(parent, n, size, name)
 	local row = {}
 	for i = 1, n do
@@ -339,10 +367,19 @@ local function IconRow(parent, n, size, name)
 		b:SetHeight(size)
 		b.icon = b:CreateTexture(nil, "ARTWORK")
 		b.icon:SetAllPoints(b)
+		-- the stock debuff border (BuffFrame.xml's overlay crop), tinted like DebuffTypeColor
+		b.border = b:CreateTexture(nil, "OVERLAY")
+		b.border:SetTexture("Interface\\Buttons\\UI-Debuff-Overlays")
+		b.border:SetTexCoord(0.296875, 0.5703125, 0, 0.515625)
+		b.border:SetPoint("TOPLEFT", b, "TOPLEFT", -1, 1)
+		b.border:SetPoint("BOTTOMRIGHT", b, "BOTTOMRIGHT", 1, -1)
+		b.border:Hide()
 		b.cd = CreateFrame("Model", name .. i .. "Cooldown", b, "CooldownFrameTemplate")
 		b.cd:SetAllPoints(b)
 		b.text = b:CreateFontString(nil, "OVERLAY", "NumberFontNormalSmall")
 		b.text:SetPoint("BOTTOMRIGHT", b, "BOTTOMRIGHT", 1, 1)
+		b.time = b:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+		b.time:SetPoint("TOP", b, "BOTTOM", 0, -1)
 		b:SetScript("OnEnter", function()
 			if not this.tip then return end
 			GameTooltip:SetOwner(this, "ANCHOR_BOTTOMRIGHT")
@@ -357,18 +394,38 @@ local function IconRow(parent, n, size, name)
 	return row
 end
 
-local function Place(row, parent, y, size, gap, perLine)
-	for i, b in ipairs(row) do
-		local col, line = math.mod(i - 1, perLine), math.floor((i - 1) / perLine)
-		b:ClearAllPoints()
-		b:SetPoint("TOPLEFT", parent, "TOPLEFT", 10 + col * (size + gap), y - line * (size + gap))
+-- One section at y: its label and its first `n` icons, wrapped to as many lines as they need.
+-- Returns the y below it; nothing shown and y unchanged when n is 0.
+local function Section(label, row, size, n, y)
+	local perLine = math.max(1, math.floor((W - PAD - LABEL_W + GAP) / (size + GAP)))
+	if n == 0 then
+		label:Hide()
+		for _, b in ipairs(row) do b:Hide() end
+		return y
 	end
+	label:ClearAllPoints()
+	label:SetPoint("TOPLEFT", panel, "TOPLEFT", PAD, y - math.floor((size - 10) / 2))
+	label:Show()
+	local lineH = size + TIME_H + 3
+	for i, b in ipairs(row) do
+		if i <= n then
+			local col, line = math.mod(i - 1, perLine), math.floor((i - 1) / perLine)
+			b:ClearAllPoints()
+			b:SetPoint("TOPLEFT", panel, "TOPLEFT", PAD + LABEL_W + col * (size + GAP), y - line * lineH)
+			b:Show()
+		else
+			b:Hide()
+		end
+	end
+	return y - math.ceil(n / perLine) * lineH - 2
 end
 
 local function Build()
-	panel = CreateFrame("Frame", "AgentCamObs", UIParent)
+	-- A child of the AgentCam panel: it hides, folds and scales with it. It starts docked beside it
+	-- (Dock); dragged, it stays where it was dropped (odb.pos), and /ac obs dock puts it back.
+	panel = CreateFrame("Frame", "AgentCamObs", AgentCamFrame or UIParent)
 	panel:SetWidth(W)
-	panel:SetHeight(400)
+	panel:SetHeight(40)
 	panel:SetFrameStrata("MEDIUM")
 	panel:SetBackdrop({
 		bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
@@ -376,78 +433,61 @@ local function Build()
 		tile = true, tileSize = 16, edgeSize = 12,
 		insets = { left = 3, right = 3, top = 3, bottom = 3 },
 	})
-	panel:SetBackdropColor(0, 0, 0, 0.75)
+	panel.ApplyBg = function()
+		-- odb.bg: background opacity 0..1 (settings slider, /ac obs bg <0-100>); 0 also drops the border
+		local a = odb.bg or 0.75
+		panel:SetBackdropColor(0, 0, 0, a)
+		panel:SetBackdropBorderColor(1, 1, 1, a > 0 and 1 or 0)
+	end
+	panel.ApplyBg()
 	panel:SetMovable(true)
 	panel:EnableMouse(true)
 	panel:RegisterForDrag("LeftButton")
 	panel:SetScript("OnDragStart", function() this:StartMoving() end)
 	panel:SetScript("OnDragStop", function()
 		this:StopMovingOrSizing()
-		local p, _, rp, x, y = this:GetPoint()
-		odb.pos = { p, rp, x, y }
+		-- saved as a top-left corner on UIParent, in this frame's own scale
+		odb.pos = { this:GetLeft(), this:GetTop() }
+		this:ClearAllPoints()
+		this:SetPoint("TOPLEFT", UIParent, "BOTTOMLEFT", odb.pos[1], odb.pos[2])
+		this.side = "free"
 	end)
-	if odb.pos then
-		panel:SetPoint(odb.pos[1], UIParent, odb.pos[2], odb.pos[3], odb.pos[4])
-	else
-		panel:SetPoint("TOPRIGHT", UIParent, "TOPRIGHT", -220, -200)
-	end
+	if type(odb.pos) ~= "table" or type(odb.pos[1]) ~= "number" then odb.pos = nil end -- older layouts
 
 	local close = CreateFrame("Button", "AgentCamObsClose", panel, "UIPanelCloseButton")
-	close:SetWidth(24)
-	close:SetHeight(24)
-	close:SetPoint("TOPRIGHT", panel, "TOPRIGHT", 0, 0)
+	close:SetWidth(20)
+	close:SetHeight(20)
+	close:SetPoint("TOPRIGHT", panel, "TOPRIGHT", 1, 1)
 	close:SetScript("OnClick", function() AgentCamObs_Toggle("hide") end)
 
-	local y = -8
-	panel.classIcon = panel:CreateTexture(nil, "ARTWORK")
-	panel.classIcon:SetWidth(28)
-	panel.classIcon:SetHeight(28)
-	panel.classIcon:SetTexture(CLASS_SHEET)
-	panel.classIcon:SetPoint("TOPLEFT", panel, "TOPLEFT", 8, y)
-	panel.title = panel:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-	panel.title:SetPoint("TOPLEFT", panel.classIcon, "TOPRIGHT", 6, -1)
-	panel.title:SetJustifyH("LEFT")
-	panel.sub = panel:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-	panel.sub:SetPoint("TOPLEFT", panel.title, "BOTTOMLEFT", 0, -2)
-	panel.sub:SetJustifyH("LEFT")
-	y = y - 32
-	panel.hp = Bar(panel, W - 20, 12)
-	panel.hp:SetPoint("TOPLEFT", panel, "TOPLEFT", 10, y)
-	y = y - 13
-	panel.mp = Bar(panel, W - 20, 8)
-	panel.mp:SetPoint("TOPLEFT", panel, "TOPLEFT", 10, y)
-	y = y - 12
-	panel.cast = Bar(panel, W - 20, 12)
-	panel.cast:SetPoint("TOPLEFT", panel, "TOPLEFT", 10, y)
-	panel.castY = y
-
-	panel.groupLabel = Label(panel, "Group")
-	panel.members = {}
-	for i = 1, MAX_MEMBERS do
-		local m = Bar(panel, 54, 12)
-		m.text:SetFontObject(GameFontHighlightSmall)
-		m.text:ClearAllPoints()
-		m.text:SetPoint("LEFT", m, "LEFT", 2, 0)
-		m.text:SetWidth(52)
-		m.text:SetJustifyH("LEFT")
-		m:Hide()
-		panel.members[i] = m
+	-- Only what the agent is doing. Its name, health, power and experience are its row in the
+	-- AgentCam panel. Combo points (server data only) sit above the cast bar.
+	panel.combo = {}
+	panel.pipW = math.floor((W - 2 * PAD - 20 - 4 * 3) / 5)
+	for i = 1, 5 do
+		local t = panel:CreateTexture(nil, "ARTWORK")
+		t:SetWidth(panel.pipW)
+		t:SetHeight(4)
+		t:SetTexture(0.2, 0.2, 0.2, 0.8)
+		t:Hide()
+		panel.combo[i] = t
 	end
+	panel.castIcon = panel:CreateTexture(nil, "ARTWORK")
+	panel.castIcon:SetWidth(CAST_ICON)
+	panel.castIcon:SetHeight(CAST_ICON)
+	panel.cast = Bar(panel, W - 2 * PAD - CAST_ICON - 3 - 18, 14) -- clear of the close button
 
-	panel.castLabel = Label(panel, "Recent casts")
-	panel.casts = IconRow(panel, MAX_CASTS, 26, "AgentCamObsCast")
-	panel.cdLabel = Label(panel, "Cooldowns")
-	panel.cds = IconRow(panel, MAX_CDS, 24, "AgentCamObsCD")
-	panel.buffLabel = Label(panel, "Buffs")
-	panel.buffs = IconRow(panel, MAX_AURAS, 18, "AgentCamObsBuff")
-	panel.debuffLabel = Label(panel, "Debuffs")
-	panel.debuffs = IconRow(panel, MAX_AURAS, 18, "AgentCamObsDebuff")
-	panel.source = panel:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-	panel.source:SetJustifyH("LEFT")
-	panel.empty = panel:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-	panel.empty:SetText("none")
-	panel.emptyCd = panel:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-	panel.emptyCd:SetText("none")
+	local function L(text)
+		local l = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+		l:SetText(text)
+		l:SetWidth(LABEL_W - 2)
+		l:SetJustifyH("LEFT")
+		return l
+	end
+	panel.castLabel, panel.casts = L("Cast"), IconRow(panel, MAX_CASTS, SIZES.casts, "AgentCamObsCast")
+	panel.cdLabel, panel.cds = L("CD"), IconRow(panel, MAX_CDS, SIZES.cds, "AgentCamObsCD")
+	panel.buffLabel, panel.buffs = L("Buff"), IconRow(panel, MAX_AURAS, SIZES.buffs, "AgentCamObsBuff")
+	panel.debuffLabel, panel.debuffs = L("Debuff"), IconRow(panel, MAX_AURAS, SIZES.debuffs, "AgentCamObsDebuff")
 	panel:Hide()
 end
 
@@ -464,20 +504,12 @@ local function Subject()
 	return n and Get(n) or nil
 end
 
--- Status for a member: the server's record, else AgentCam's scan.
-local function MemberStatus(name)
-	local o = obs[Lower(name)]
-	if o and o.hpMax then return o.hp, o.hpMax, o.class, o.dead or o.ghost, o.offline end
-	local st, class = nil, nil
-	if AgentCam_GetStats then st, class = AgentCam_GetStats(name) end
-	if st then return st.hp, st.hpMax, class, st.dead end
-	return nil, nil, class
-end
-
-local function Age(t)
-	local s = math.floor(GetTime() - t)
-	if s < 60 then return s .. "s" end
-	return math.floor(s / 60) .. "m"
+-- The agent's class: the server's record, else what AgentCam learned (for the combo pips).
+local function ClassOf(o)
+	if o.class then return o.class end
+	local _, class = nil, nil
+	if AgentCam_GetStats then _, class = AgentCam_GetStats(o.name) end
+	return class
 end
 
 local function FillAuras(row, list, isDebuff)
@@ -488,13 +520,18 @@ local function FillAuras(row, list, isDebuff)
 			n = i
 			b.icon:SetTexture(a.icon or QUESTION)
 			local left = a.ends and a.ends - GetTime()
-			b.text:SetText((a.stacks and a.stacks > 1) and a.stacks or (left and left > 0 and left < 60 and math.floor(left) or ""))
+			b.text:SetText((a.stacks and a.stacks > 1) and a.stacks or "")
+			b.time:SetText((left and left > 0) and Short(left) or "")
 			b.tip = { a.spell or ("Spell " .. (a.id or "?")) }
-			if left and left > 0 then table.insert(b.tip, "Time left: " .. math.floor(left) .. "s") end
-			if isDebuff then b.icon:SetVertexColor(1, 0.7, 0.7) else b.icon:SetVertexColor(1, 1, 1) end
-			b:Show()
-		else
-			b:Hide()
+			if left and left > 0 then table.insert(b.tip, "Time left: " .. Short(left)) end
+			if isDebuff then
+				-- no dispel type reaches us, so the stock "none" colour (BuffFrame.lua's DebuffTypeColor)
+				local c = DebuffTypeColor and DebuffTypeColor["none"] or { r = 0.8, g = 0, b = 0 }
+				b.border:SetVertexColor(c.r, c.g, c.b)
+				b.border:Show()
+			else
+				b.border:Hide()
+			end
 		end
 	end
 	return n
@@ -503,104 +540,56 @@ end
 local function Refresh()
 	if not panel or not panel:IsShown() then return end
 	local o = Subject()
+	local y = -PAD
 	if not o then
-		panel.title:SetText("No agent")
-		panel.sub:SetText("Tick an agent in /ac config")
+		panel.castIcon:Hide()
+		panel.cast:ClearAllPoints()
+		panel.cast:SetPoint("TOPLEFT", panel, "TOPLEFT", PAD, y)
+		SetBar(panel.cast, 0, 1, 1, 0.7, 0, "|cff808080no agent: tick one in /ac config|r")
+		panel:SetHeight(PAD * 2 + 14)
 		return
 	end
-	local hp, hpMax, class = MemberStatus(o.name)
-	class = o.class or class
-	local r, g, b = ClassColor(class)
-	panel.title:SetText(o.name)
-	panel.title:SetTextColor(r, g, b)
-	local tc = CLASS_TCOORDS[class or ""]
-	if tc then
-		panel.classIcon:SetTexCoord(tc[1], tc[2], tc[3], tc[4]); panel.classIcon:Show()
-	else
-		panel.classIcon:Hide()
-	end
-	local sub = {}
-	if o.level and o.level > 0 then table.insert(sub, "Lv " .. o.level) end
-	if o.zone and o.zone ~= "" then table.insert(sub, o.zone) end
-	if o.dead then table.insert(sub, "|cffff4040dead|r") elseif o.ghost then table.insert(sub, "|cffaaaaaaghost|r") end
-	if o.combat then table.insert(sub, "|cffff8000in combat|r") end
-	if o.offline then table.insert(sub, "|cff808080offline|r") end
-	if o.target then table.insert(sub, "-> " .. o.target) end
-	panel.sub:SetText(table.concat(sub, "  "))
+	local class = ClassOf(o)
 
-	-- health, power, cast
-	if hpMax and hpMax > 0 then
-		SetBar(panel.hp, hp, hpMax, 0.1, 0.8, 0.1, hp .. " / " .. hpMax)
-	else
-		SetBar(panel.hp, 0, 1, 0.3, 0.3, 0.3, "health unknown")
-	end
-	local st = AgentCam_GetStats and AgentCam_GetStats(o.name)
-	local mp, mpMax, ptype = o.mp, o.mpMax, o.ptype
-	if not mpMax and st then mp, mpMax, ptype = st.mp, st.mpMax, st.ptype end
-	local pc = POWER_COLORS[ptype or 0] or POWER_COLORS[0]
-	SetBar(panel.mp, mp or 0, mpMax or 1, pc[1], pc[2], pc[3], mpMax and mpMax > 0 and (mp .. " / " .. mpMax) or "")
-	local c = o.casting
-	if c and c.ends and c.ends < GetTime() - 1 then o.casting, c = nil, nil end
-	if c then
-		local total = c.ends and (c.ends - c.t) or 0
-		local done = GetTime() - c.t
-		SetBar(panel.cast, total > 0 and math.min(done, total) or 1, total > 0 and total or 1, 1, 0.7, 0,
-			c.spell .. (c.target and (" -> " .. c.target) or ""))
-	else
-		SetBar(panel.cast, 0, 1, 1, 0.7, 0, "|cff808080not casting|r")
-	end
-
-	local y = panel.castY - 18
-
-	-- group: the server's roster, else the ticked agents
-	local members, head
-	if o.group and o.group.kind ~= "-" then
-		members = o.group.members
-		head = (o.group.kind == "R" and "Raid " or "Party ") .. table.getn(members)
-		if o.group.leader then head = head .. "  leader " .. o.group.leader end
-	elseif o.group then
-		members, head = { o.name }, "Not in a group"
-	else
-		members = AgentCam_Agents and AgentCam_Agents() or {}
-		head = "Agents " .. table.getn(members) .. " (no group data from the server)"
-	end
-	panel.groupLabel:ClearAllPoints()
-	panel.groupLabel:SetPoint("TOPLEFT", panel, "TOPLEFT", 10, y)
-	panel.groupLabel:SetText(head)
-	y = y - 14
-	local perLine = 5
-	local cellW = math.floor((W - 20 - (perLine - 1) * 2) / perLine)
-	local shown = 0
-	for i, m in ipairs(panel.members) do
-		local name = members[i]
-		if name then
-			shown = i
-			local mhp, mmax, mclass, mdead, moff = MemberStatus(name)
-			local cr, cg, cb = ClassColor(mclass)
-			m:SetWidth(cellW)
-			m.text:SetWidth(cellW - 4)
-			m:ClearAllPoints()
-			m:SetPoint("TOPLEFT", panel, "TOPLEFT", 10 + math.mod(i - 1, perLine) * (cellW + 2), y - math.floor((i - 1) / perLine) * 14)
-			local label = name
-			if Lower(name) == Lower(o.name) then label = "> " .. name end
-			if mdead then label = label .. " x" elseif moff then label = label .. " off" end
-			if mmax and mmax > 0 then
-				SetBar(m, mhp, mmax, cr, cg, cb, label)
-			else
-				SetBar(m, 0, 1, cr, cg, cb, label)
-			end
-			m:Show()
+	-- combo points for a rogue or a druid (cat form), once the server reports them
+	local cp = o.combo
+	local pips = cp and (class == "ROGUE" or class == "DRUID" or cp > 0)
+	for i, t in ipairs(panel.combo) do
+		if pips then
+			t:ClearAllPoints()
+			t:SetPoint("TOPLEFT", panel, "TOPLEFT", PAD + (i - 1) * (panel.pipW + 3), y)
+			if i <= cp then t:SetTexture(1, 0.85, 0.1, 1) else t:SetTexture(0.2, 0.2, 0.2, 0.8) end
+			t:Show()
 		else
-			m:Hide()
+			t:Hide()
 		end
 	end
-	y = y - math.ceil(shown / perLine) * 14 - 6
+	if pips then y = y - 7 end
 
-	-- recent casts
-	panel.castLabel:ClearAllPoints()
-	panel.castLabel:SetPoint("TOPLEFT", panel, "TOPLEFT", 10, y)
-	y = y - 14
-	Place(panel.casts, panel, y, 26, 4, MAX_CASTS)
+	-- the cast bar: icon, spell -> target, seconds left
+	local c = o.casting
+	if c and c.ends and c.ends < GetTime() - 1 then o.casting, c = nil, nil end
+	panel.castIcon:ClearAllPoints()
+	panel.castIcon:SetPoint("TOPLEFT", panel, "TOPLEFT", PAD, y)
+	panel.cast:ClearAllPoints()
+	panel.cast:SetPoint("TOPLEFT", panel, "TOPLEFT", PAD + CAST_ICON + 3, y - (CAST_ICON - 14) / 2)
+	if c then
+		panel.castIcon:SetTexture(c.icon or QUESTION)
+		panel.castIcon:SetAlpha(1)
+		local total = c.ends and (c.ends - c.t) or 0
+		local done = GetTime() - c.t
+		local left = total > 0 and math.max(0, total - done) or nil
+		SetBar(panel.cast, total > 0 and math.min(done, total) or 1, total > 0 and total or 1, 1, 0.7, 0,
+			c.spell .. (c.target and (" > " .. c.target) or ""), left and string.format("%.1f", left) or nil)
+	else
+		panel.castIcon:SetTexture("Interface\\Icons\\INV_Misc_PocketWatch_01")
+		panel.castIcon:SetAlpha(0.3)
+		SetBar(panel.cast, 0, 1, 1, 0.7, 0, "|cff808080not casting|r")
+	end
+	panel.castIcon:Show()
+	y = y - CAST_ICON - 6
+
+	-- recent casts, newest first; the time under each is how long ago
 	local nc = 0
 	for i, bt in ipairs(panel.casts) do
 		local cs = o.casts[i]
@@ -609,25 +598,16 @@ local function Refresh()
 			bt.icon:SetTexture(cs.icon or QUESTION)
 			bt.icon:SetVertexColor(1, 1, 1)
 			if cs.state == "failed" then bt.icon:SetVertexColor(1, 0.3, 0.3) end
-			bt.text:SetText(Age(cs.t))
+			bt.text:SetText("")
+			bt.time:SetText(Short(GetTime() - cs.t))
 			bt.tip = { cs.spell or ("Spell " .. (cs.id or "?")) }
 			if cs.target then table.insert(bt.tip, "on " .. cs.target) end
-			table.insert(bt.tip, (cs.state == "casting" and "casting, " or cs.state == "failed" and ("failed" .. (cs.reason and (" (" .. cs.reason .. ")") or "") .. ", ") or "") .. Age(cs.t) .. " ago")
-			bt:Show()
-		else
-			bt:Hide()
+			table.insert(bt.tip, (cs.state == "casting" and "casting, " or cs.state == "failed" and ("failed" .. (cs.reason and (" (" .. cs.reason .. ")") or "") .. ", ") or "") .. math.floor(GetTime() - cs.t) .. "s ago")
 		end
 	end
-	panel.empty:ClearAllPoints()
-	panel.empty:SetPoint("TOPLEFT", panel, "TOPLEFT", 12, y - 6)
-	if nc == 0 then panel.empty:Show() else panel.empty:Hide() end
-	y = y - 26 - 8
+	y = Section(panel.castLabel, panel.casts, SIZES.casts, nc, y)
 
 	-- cooldowns, soonest ready first
-	panel.cdLabel:ClearAllPoints()
-	panel.cdLabel:SetPoint("TOPLEFT", panel, "TOPLEFT", 10, y)
-	y = y - 14
-	Place(panel.cds, panel, y, 24, 4, MAX_CDS)
 	local cds = {}
 	for id, cd in pairs(o.cds) do
 		if cd.start + cd.dur <= GetTime() then
@@ -637,6 +617,7 @@ local function Refresh()
 		end
 	end
 	table.sort(cds, function(a, b2) return a.start + a.dur < b2.start + b2.dur end)
+	local ncd = math.min(table.getn(cds), MAX_CDS)
 	for i, bt in ipairs(panel.cds) do
 		local cd = cds[i]
 		if cd then
@@ -646,46 +627,65 @@ local function Refresh()
 				bt.cdStart = cd.start
 			end
 			local left = cd.start + cd.dur - GetTime()
-			bt.text:SetText(left >= 60 and (math.floor(left / 60) .. "m") or math.floor(left))
-			bt.tip = { cd.spell or "?", "Ready in " .. math.floor(left) .. "s" }
-			bt:Show()
+			bt.text:SetText("")
+			bt.time:SetText(Short(left))
+			bt.tip = { cd.spell or "?", "Ready in " .. Short(left) }
 		else
 			bt.cdStart = nil
-			bt:Hide()
 		end
 	end
-	panel.emptyCd:ClearAllPoints()
-	panel.emptyCd:SetPoint("TOPLEFT", panel, "TOPLEFT", 12, y - 6)
-	if table.getn(cds) == 0 then
-		panel.emptyCd:SetText(GetTime() - o.server < SERVER_FRESH and "none" or "needs server data")
-		panel.emptyCd:Show()
-	else
-		panel.emptyCd:Hide()
-	end
-	y = y - 24 - 8
+	y = Section(panel.cdLabel, panel.cds, SIZES.cds, ncd, y)
 
 	-- buffs, debuffs
-	panel.buffLabel:ClearAllPoints()
-	panel.buffLabel:SetPoint("TOPLEFT", panel, "TOPLEFT", 10, y)
-	y = y - 14
-	Place(panel.buffs, panel, y, 18, 2, 14)
-	local nb = FillAuras(panel.buffs, o.buffs, false)
-	y = y - math.max(1, math.ceil(nb / 14)) * 20 - 4
-	panel.debuffLabel:ClearAllPoints()
-	panel.debuffLabel:SetPoint("TOPLEFT", panel, "TOPLEFT", 10, y)
-	y = y - 14
-	Place(panel.debuffs, panel, y, 18, 2, 14)
-	local nd = FillAuras(panel.debuffs, o.debuffs, true)
-	y = y - math.max(1, math.ceil(nd / 14)) * 20 - 4
+	y = Section(panel.buffLabel, panel.buffs, SIZES.buffs, FillAuras(panel.buffs, o.buffs, false), y)
+	y = Section(panel.debuffLabel, panel.debuffs, SIZES.debuffs, FillAuras(panel.debuffs, o.debuffs, true), y)
 
-	panel.source:ClearAllPoints()
-	panel.source:SetPoint("TOPLEFT", panel, "TOPLEFT", 10, y)
-	if GetTime() - o.server < SERVER_FRESH then
-		panel.source:SetText("Source: server (WOWOBS)" .. (pinned and "  pinned" or ""))
-	else
-		panel.source:SetText("Source: combat log nearby, no cooldowns" .. (pinned and "  pinned" or ""))
+	panel:SetHeight(-y + PAD - 2)
+end
+
+-- Beside the AgentCam panel: on its left, or its right when there is no room on the left.
+local function Dock()
+	local f = AgentCamFrame
+	if not f or panel:GetParent() ~= f then return end
+	if odb.pos then
+		-- moved by hand: where it was dropped
+		if panel.side ~= "free" then
+			panel.side = "free"
+			panel:ClearAllPoints()
+			panel:SetPoint("TOPLEFT", UIParent, "BOTTOMLEFT", odb.pos[1], odb.pos[2])
+		end
+		return
 	end
-	panel:SetHeight(-y + 18)
+	local left = f:GetLeft()
+	local side = (left and left < W + 10) and "RIGHT" or "LEFT"
+	if panel.side == side then return end
+	panel.side = side
+	panel:ClearAllPoints()
+	if side == "LEFT" then
+		panel:SetPoint("TOPRIGHT", f, "TOPLEFT", -2, 0)
+	else
+		panel:SetPoint("TOPLEFT", f, "TOPRIGHT", 2, 0)
+	end
+end
+
+-- Wanted (odb.shown) and the AgentCam panel unfolded: a folded panel folds this one away too.
+local function Visible()
+	return odb and odb.shown and not (AgentCam_Collapsed and AgentCam_Collapsed())
+end
+
+-- Background opacity 0..1, for the settings window.
+function AgentCamObs_SetBg(a)
+	if not panel then return end
+	odb.bg = a
+	panel.ApplyBg()
+end
+
+function AgentCamObs_GetBg()
+	return odb and (odb.bg or 0.75) or 0.75
+end
+
+function AgentCamObs_IsShown()
+	return panel ~= nil and panel:IsVisible() and true or false
 end
 
 function AgentCamObs_Toggle(arg)
@@ -697,20 +697,33 @@ function AgentCamObs_Toggle(arg)
 		odb.shown = nil
 		return
 	end
+	local _, _, bg = string.find(low, "^bg%s*(%d+)$")
+	if bg then
+		odb.bg = math.max(0, math.min(100, tonumber(bg))) / 100
+		panel.ApplyBg()
+		return
+	end
+	if low == "dock" then
+		odb.pos, panel.side = nil, nil -- back beside the AgentCam panel
+		low, arg = "show", "show"
+	end
 	if low == "auto" then
 		pinned = nil
 	elseif arg ~= "" and low ~= "show" and low ~= "on" then
 		pinned = Lower(arg)
 		Get(arg)
 	end
-	if low == "" and panel:IsShown() then
+	if low == "" and odb.shown then
 		panel:Hide()
 		odb.shown = nil
 		return
 	end
-	panel:Show()
 	odb.shown = true
-	Refresh()
+	if Visible() then
+		Dock()
+		panel:Show()
+		Refresh()
+	end
 end
 
 -- For tests and other addons: feed one WOWOBS record as if the server had sent it.
@@ -749,7 +762,8 @@ ev:SetScript("OnEvent", function()
 		odb = AgentCamDB.obs
 		odb.icons = odb.icons or {}
 		Build()
-		if odb.shown then panel:Show() end
+		if odb.shown == nil then odb.shown = true end -- on by default, docked to the AgentCam panel
+		if Visible() then Dock() panel:Show() end
 	elseif not odb then
 		return
 	elseif event == "CHAT_MSG_ADDON" then
@@ -768,5 +782,12 @@ ev:SetScript("OnUpdate", function()
 	elapsed = elapsed + arg1
 	if elapsed < 0.2 then return end
 	elapsed = 0
+	if not panel then return end
+	if Visible() then
+		Dock()
+		if not panel:IsShown() then panel:Show() end
+	elseif panel:IsShown() then
+		panel:Hide()
+	end
 	Refresh()
 end)

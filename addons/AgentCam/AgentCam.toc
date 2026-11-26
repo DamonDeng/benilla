@@ -4,4 +4,5 @@
 ## Author: yourlin (workshop)
 ## SavedVariables: AgentCamDB
 AgentCam.lua
+AgentCamSpellIcons.lua
 AgentCamObs.lua
