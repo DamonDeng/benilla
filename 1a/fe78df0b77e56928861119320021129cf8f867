@@ -1,0 +1,28 @@
+addons/AgentCam/AgentCamObs.lua
+  s_885a88914a260d::t_6c2758de2c60f6 83-94,162,330
+  s_885a88914a260d::t_1d11ea18d5ee9e 65-69,71-77,630-633,642,646
+  s_885a88914a260d::t_8a8e594db2a25e 78,292-293,299-300,304-309,318
+  s_885a88914a260d::t_beb6744a9fa316 681-686
+addons/AgentCam/AgentCamSpellIcons.lua
+  s_885a88914a260d::t_30c0da98e9384b 8925-11772
+addons/AgentCam/README.md
+  s_885a88914a260d::t_be75952ff0ddb3 48-49,66-68
+crates/benilla-formats/examples/spell_icon_names.rs
+  s_885a88914a260d::t_87a7ae9258101f 1,3-9,20-22,43-52,72-79
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "1afe78df0b77e56928861119320021129cf8f867",
+  "prompts": {},
+  "sessions": {
+    "s_885a88914a260d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6628221e-40d8-472e-aa7e-12376fd31bee",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "linyesh <linyesh@amazon.com>"
+    }
+  }
+}
