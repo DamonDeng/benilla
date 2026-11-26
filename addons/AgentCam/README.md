@@ -45,7 +45,8 @@ Restart the client after adding the folder or an icon; `/reload` picks up edits 
   (next/previous), Alt-M (mode), Alt-A (auto), Alt-G (teleport to target), Alt-C (camera),
   Alt-H or Alt-V (GM mode + invisibility), Alt-S (screenshot). They are also under AgentCam in Keybindings.
 - Observe panel: what the viewed agent is doing, one compact line per kind: combo points (rogues,
-  druids), the cast bar (icon, target, seconds left), the last casts (hover: spell, target, how
+  druids), the cast bar (icon, target, seconds left), the last casts (a queue, newest first: a repeated spell moves to
+  the front with its count, each leaves 30 s after its last cast; hover: spell, target, how
   long ago), cooldowns with a sweep, buffs and debuffs, each with its time under the icon as the
   stock buff bar shows it. A kind with nothing to show takes no room. Its
   name, health, power and experience are its row in the AgentCam panel. It starts docked beside
@@ -62,8 +63,9 @@ Restart the client after adding the folder or an icon; `/reload` picks up edits 
 
 ## Icons
 
-`AgentCamSpellIcons.lua` maps spell names to icons for the combat-log fallback (the log names
-spells, and 1.12 has no API for a spell's icon). Regenerate it from the client's data with
+`AgentCamSpellIcons.lua` maps spell names to icons and aura durations for the combat-log
+fallback (the log names spells, never their icon or how long an aura lasts, and 1.12 has no API
+for either). A logged name that is not a spell there is ignored. Regenerate it from the client's data with
 `WOW_DATA=<Data> cargo run -p benilla-formats --example spell_icon_names > addons/AgentCam/AgentCamSpellIcons.lua`.
 
 

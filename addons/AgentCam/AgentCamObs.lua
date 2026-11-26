@@ -62,10 +62,35 @@ local function Icon(icon, spell)
 	return QUESTION
 end
 
+-- Recent casts are a queue, newest first. A spell already in it moves to the front instead of
+-- taking a second cell (its count in the corner): a spammed Polymorph does not fill the row.
+-- Entries leave CAST_KEEP seconds after their last cast (Refresh), so an agent that stops
+-- casting ends with an empty row.
+local CAST_KEEP = 30
 local function AddCast(o, c)
+	for i = table.getn(o.casts), 1, -1 do
+		local old = o.casts[i]
+		if old.spell == c.spell and old.state ~= "casting" then
+			c.n = (old.n or 1) + 1
+			c.target = c.target or old.target
+			table.remove(o.casts, i)
+		end
+	end
 	table.insert(o.casts, 1, c)
 	while table.getn(o.casts) > MAX_CASTS do table.remove(o.casts) end
 end
+
+-- A cast that was in progress has finished: fold older entries of its spell into it.
+local function Finish(o, c)
+	for i = table.getn(o.casts), 1, -1 do
+		local old = o.casts[i]
+		if old ~= c and old.spell == c.spell and old.state ~= "casting" then
+			c.n = (c.n or 1) + (old.n or 1)
+			table.remove(o.casts, i)
+		end
+	end
+end
+
 
 ------------------------------------------------------------------------------- server records
 
@@ -134,6 +159,7 @@ HANDLERS.S = function(f)
 	local id = Num(f[3])
 	if o.casting and o.casting.id == id then
 		o.casting.state, o.casting.t = "done", GetTime()
+		Finish(o, o.casting)
 		o.casting = nil
 		return
 	end
@@ -263,13 +289,22 @@ local function IsAgent(name)
 	return false
 end
 
+-- The log gives no time left: the aura's fixed duration from Spell.dbc (AgentCamSpellIcons.lua)
+-- starts when it is gained and restarts when it is gained again.
 local function SetAura(list, spell, on)
 	for i = table.getn(list), 1, -1 do
 		if list[i].spell == spell then table.remove(list, i) end
 	end
 	if on and table.getn(list) < MAX_AURAS then
-		table.insert(list, { spell = spell, icon = Icon(nil, spell) })
+		local ms = AgentCam_SpellDurations and AgentCam_SpellDurations[spell]
+		table.insert(list, { spell = spell, icon = Icon(nil, spell), ends = ms and GetTime() + ms / 1000 or nil })
 	end
+end
+
+-- A name the log pattern captured is a spell only when Spell.dbc knows it: "10 Mana from X's
+-- Blessing of Wisdom" (a mana tick matched as "X gains %s") is not one.
+local function IsSpell(name)
+	return name and (not AgentCam_SpellIcons or AgentCam_SpellIcons[name] ~= nil)
 end
 
 local function OnLogLine(msg)
@@ -280,6 +315,7 @@ local function OnLogLine(msg)
 			local unit, spell = cap[c.u + 2], cap[c.s + 2]
 			local target = c.t and cap[c.t + 2] or nil
 			if not unit or not IsAgent(unit) then return end
+			if not IsSpell(spell) then return end
 			local o = Get(unit)
 			if GetTime() - o.server < SERVER_FRESH then return end -- the server says it better
 			o.seen = GetTime()
@@ -291,6 +327,7 @@ local function OnLogLine(msg)
 				local last = o.casts[1]
 				if o.casting and o.casting.spell == spell then
 					o.casting.state, o.casting.t, o.casting.target = "done", GetTime(), target or o.casting.target
+					Finish(o, o.casting)
 					o.casting = nil
 				elseif not (last and last.spell == spell and GetTime() - last.t < 0.5) then
 					-- one cast can log twice (casts X, X hits Y): keep one row
@@ -590,6 +627,10 @@ local function Refresh()
 	y = y - CAST_ICON - 6
 
 	-- recent casts, newest first; the time under each is how long ago
+	for i = table.getn(o.casts), 1, -1 do
+		local cs = o.casts[i]
+		if cs.state ~= "casting" and GetTime() - cs.t > CAST_KEEP then table.remove(o.casts, i) end
+	end
 	local nc = 0
 	for i, bt in ipairs(panel.casts) do
 		local cs = o.casts[i]
@@ -598,10 +639,11 @@ local function Refresh()
 			bt.icon:SetTexture(cs.icon or QUESTION)
 			bt.icon:SetVertexColor(1, 1, 1)
 			if cs.state == "failed" then bt.icon:SetVertexColor(1, 0.3, 0.3) end
-			bt.text:SetText("")
+			bt.text:SetText((cs.n and cs.n > 1) and cs.n or "")
 			bt.time:SetText(Short(GetTime() - cs.t))
 			bt.tip = { cs.spell or ("Spell " .. (cs.id or "?")) }
 			if cs.target then table.insert(bt.tip, "on " .. cs.target) end
+			if cs.n and cs.n > 1 then table.insert(bt.tip, cs.n .. " casts in a row") end
 			table.insert(bt.tip, (cs.state == "casting" and "casting, " or cs.state == "failed" and ("failed" .. (cs.reason and (" (" .. cs.reason .. ")") or "") .. ", ") or "") .. math.floor(GetTime() - cs.t) .. "s ago")
 		end
 	end
@@ -636,7 +678,12 @@ local function Refresh()
 	end
 	y = Section(panel.cdLabel, panel.cds, SIZES.cds, ncd, y)
 
-	-- buffs, debuffs
+	-- buffs, debuffs; one whose time has run out is gone (the log's fade line can be missed)
+	for _, list in ipairs({ o.buffs, o.debuffs }) do
+		for i = table.getn(list), 1, -1 do
+			if list[i].ends and list[i].ends <= GetTime() then table.remove(list, i) end
+		end
+	end
 	y = Section(panel.buffLabel, panel.buffs, SIZES.buffs, FillAuras(panel.buffs, o.buffs, false), y)
 	y = Section(panel.debuffLabel, panel.debuffs, SIZES.debuffs, FillAuras(panel.debuffs, o.debuffs, true), y)
 
