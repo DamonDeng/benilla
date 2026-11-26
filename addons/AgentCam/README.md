@@ -44,6 +44,14 @@ Restart the client after adding the folder or an icon; `/reload` picks up edits 
 - Keys: `/ac keys` binds Alt-1..5 (panel agents 1-5), Alt-0 (back to me), Alt-=/Alt--
   (next/previous), Alt-M (mode), Alt-A (auto), Alt-G (teleport to target), Alt-C (camera),
   Alt-V (invisibility), Alt-H (GM mode), Alt-S (screenshot). They are also under AgentCam in Keybindings.
+- Observe panel: `/ac obs` toggles it (`/ac obs <Name>` pins one agent, `/ac obs auto` follows
+  the viewed agent again). It shows the agent's level, zone, combat state and target, health,
+  power and current cast, its party or raid with each member's health, the last casts (hover:
+  spell, target, how long ago), cooldowns with a sweep, buffs and debuffs. Full data comes from
+  the server's `WOWOBS` addon messages ([OBS_PROTOCOL.md](OBS_PROTOCOL.md)); until the server
+  sends them, casts and auras come from the combat log nearby, the group is the ticked agent
+  list, and cooldowns stay empty. Server status lines also feed the panel's bars, and then the
+  target-swap scan leaves that agent alone.
 - `/ac help` lists the commands; `/ac disable` / `/ac enable` turn the whole addon off and on.
 
 ## Icons

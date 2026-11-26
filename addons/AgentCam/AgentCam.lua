@@ -37,6 +37,7 @@ BINDING_NAME_AGENTCAM_CAM = "Toggle far camera"
 BINDING_NAME_AGENTCAM_INVIS = "Toggle GM invisibility"
 BINDING_NAME_AGENTCAM_GM = "Toggle GM mode"
 BINDING_NAME_AGENTCAM_SHOT = "Screenshot with caption"
+BINDING_NAME_AGENTCAM_OBS = "Toggle the observe panel"
 
 local db -- AgentCamDB after load
 local current -- slot (1..MAX_AGENTS) of the agent being viewed, or nil
@@ -432,6 +433,41 @@ local function Capture(unit)
 	if UpdateBars then UpdateBars() end
 end
 
+-- For AgentCamObs: the viewed agent's name, the ticked agents' names, one agent's status, and a
+-- status line fed from the server's WOWOBS messages (which beats the target-swap scan).
+function AgentCam_Watched()
+	return current and db and db.names[current] or nil
+end
+
+function AgentCam_Agents()
+	local t = {}
+	if not db then return t end
+	for _, slot in ipairs(ActiveSlots()) do table.insert(t, db.names[slot]) end
+	return t
+end
+
+function AgentCam_GetStats(name)
+	local key = Lower(name)
+	if not key or not db then return nil end
+	return stats[key], db.classes[key]
+end
+
+function AgentCam_Feed(name, st)
+	local key = Lower(name)
+	if not key or not db then return end
+	local ours
+	for i = 1, MAX_AGENTS do
+		if db.names[i] and Lower(db.names[i]) == key then ours = true break end
+	end
+	if not ours then return end
+	if st.class then db.classes[key] = st.class end
+	stats[key] = {
+		hp = st.hp, hpMax = st.hpMax, mp = st.mp, mpMax = st.mpMax, ptype = st.ptype,
+		dead = st.dead, t = GetTime(), obs = true,
+	}
+	if UpdateBars then UpdateBars() end
+end
+
 -- Fast status: read one nearby agent every SCAN_EVERY seconds by targeting it for a moment, the
 -- way pfUI's librange measures range: sounds and the stock target frame's events are muted for the
 -- swap, pfScanActive tells pfUI's own target frame to ignore it, and the old target comes back.
@@ -463,6 +499,8 @@ local function ScanOne()
 	scanPos = math.mod(scanPos, n) + 1
 	local name = db.names[list[scanPos]]
 	if (scanSkip[Lower(name)] or 0) > GetTime() then return end
+	local fed = stats[Lower(name)]
+	if fed and fed.obs and GetTime() - fed.t < 3 then return end -- the server keeps it fresh
 	HookScanErrors()
 	local before = UnitName("target")
 	if Lower(before) == Lower(name) then
@@ -1411,6 +1449,7 @@ local function Help()
 	Print("/ac mode view|follow|watch          -- eyes / free follow / .watch")
 	Print("/ac go [n|Name]                     -- teleport to panel agent n, any player, or your target")
 	Print("/ac auto [secs] | cam | invis | gm | shot | info -- director, far camera, visibility, GM mode, screenshot, overlay")
+	Print("/ac obs [Name|auto] -- observe panel: group, casts, cooldowns, auras (see OBS_PROTOCOL.md)")
 	Print("/ac config | enable | disable | set <slot> <Name> | all | none | list | keys | show | hide")
 end
 
@@ -1449,6 +1488,8 @@ SlashCmdList["AGENTCAM"] = function(msg)
 		AgentCam_ToggleGM()
 	elseif cmd == "shot" then
 		AgentCam_Screenshot()
+	elseif cmd == "obs" then
+		if AgentCamObs_Toggle then AgentCamObs_Toggle(rest) end
 	elseif cmd == "info" then
 		db.info = not db.info
 		Print(db.info and "info overlay on" or "info overlay off")
