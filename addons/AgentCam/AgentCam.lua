@@ -473,12 +473,14 @@ local function ScanOne()
 	PlaySound = function() end
 	TargetFrame_OnEvent = function() end
 	pfScanActive = true
+	-- Open the mute window before the call: the client may show the miss's line inside it.
+	scanMissAt = GetTime()
 	TargetByName(name, true)
 	if Lower(UnitName("target")) == Lower(name) then
+		scanMissAt = -100
 		Capture("target")
 		if before then TargetLastTarget() else ClearTarget() end
 	else
-		scanMissAt = GetTime()
 		scanSkip[Lower(name)] = GetTime() + SCAN_MISS_BACKOFF
 	end
 	pfScanActive = false
