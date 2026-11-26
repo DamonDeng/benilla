@@ -436,7 +436,24 @@ end
 -- way pfUI's librange measures range: sounds and the stock target frame's events are muted for the
 -- swap, pfScanActive tells pfUI's own target frame to ignore it, and the old target comes back.
 local SCAN_EVERY = 0.4
+local SCAN_MISS_BACKOFF = 10 -- seconds to skip an agent that is not around
 local scanElapsed, scanPos = 0, 0
+local scanMissAt = -100 -- GetTime() of the scan's last miss
+local scanSkip = {} -- lower-case name -> GetTime() until which it is not scanned
+
+-- A miss makes the client queue ERR_UNIT_NOT_FOUND ("Unknown unit."), shown a frame later, so it
+-- cannot be muted around the call: drop that line when it arrives right after a scan miss.
+local scanErrorsHooked
+local function HookScanErrors()
+	if scanErrorsHooked or not UIErrorsFrame then return end
+	scanErrorsHooked = true
+	local orig = UIErrorsFrame.AddMessage
+	UIErrorsFrame.AddMessage = function(self, msg, r, g, b, a, hold)
+		if msg and msg == ERR_UNIT_NOT_FOUND and GetTime() - scanMissAt < 1.5 then return end
+		return orig(self, msg, r, g, b, a, hold)
+	end
+end
+
 local function ScanOne()
 	if db.scan == false or db.bars == false or pending then return end
 	if UnitAffectingCombat("player") or (LootFrame and LootFrame:IsShown()) then return end
@@ -445,6 +462,8 @@ local function ScanOne()
 	if n == 0 then return end
 	scanPos = math.mod(scanPos, n) + 1
 	local name = db.names[list[scanPos]]
+	if (scanSkip[Lower(name)] or 0) > GetTime() then return end
+	HookScanErrors()
 	local before = UnitName("target")
 	if Lower(before) == Lower(name) then
 		Capture("target") -- already the target: read it as is
@@ -458,6 +477,9 @@ local function ScanOne()
 	if Lower(UnitName("target")) == Lower(name) then
 		Capture("target")
 		if before then TargetLastTarget() else ClearTarget() end
+	else
+		scanMissAt = GetTime()
+		scanSkip[Lower(name)] = GetTime() + SCAN_MISS_BACKOFF
 	end
 	pfScanActive = false
 	TargetFrame_OnEvent = targetEvent
