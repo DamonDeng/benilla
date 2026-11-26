@@ -1,0 +1,33 @@
+addons/AgentCam/AgentCamObs.lua
+  s_8aecc1f494ff01::t_f98613c5586921 1-30,32-191,196-772
+  s_8aecc1f494ff01::t_90acb8cd055370 31
+  s_8aecc1f494ff01::t_59b2f5752514cf 192-195
+addons/AgentCam/Bindings.xml
+  s_8aecc1f494ff01::t_ac9e25d5ff2454 17
+addons/AgentCam/OBS_PROTOCOL.md
+  s_8aecc1f494ff01::t_2e82abbd195f47 1-58
+addons/AgentCam/AgentCam.toc
+  s_8aecc1f494ff01::t_13e40e29f4fb2d 7
+addons/AgentCam/README.md
+  s_8aecc1f494ff01::t_d79ddeb5cdf215 47-54
+addons/AgentCam/AgentCam.lua
+  s_8aecc1f494ff01::t_ac9e25d5ff2454 40
+  s_8aecc1f494ff01::t_6a464ac599996d 1452
+  s_8aecc1f494ff01::t_13e40e29f4fb2d 436-470,502-503,1491-1492
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "2615ee532a6c8002c8c0487a1d711e177b4f607d",
+  "prompts": {},
+  "sessions": {
+    "s_8aecc1f494ff01": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6c77a69a-c5c7-43ef-a471-c965a23132bc",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "linyesh <linyesh@amazon.com>"
+    }
+  }
+}
