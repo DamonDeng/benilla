@@ -393,6 +393,19 @@ impl ViewFocus {
         }
     }
 
+    /// Spectating another unit through far sight: stream around the SUBJECT's map and position, with
+    /// no avatar of our own on that ground. Modelled like [`Self::entry`] (so `resolve`/`map` return
+    /// the subject's point and map and `follows_body` is false — residency is not gated on our
+    /// parked body), but for a live, moving subject, so it carries the settled bit and a far step by
+    /// the subject re-arms the load through [`Self::with_reload`] like any other far cut.
+    pub fn spectate(map: u32, wow: [f32; 3], paced: bool) -> Self {
+        Self {
+            entry: Some((map, wow)),
+            paced,
+            ..Self::default()
+        }
+    }
+
     /// The point to stream around, wow coords.
     pub(crate) fn resolve(&self, camera: Option<Vec3>) -> [f32; 3] {
         if let (Some(pos), true) = (self.body, self.attached) {

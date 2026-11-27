@@ -6,9 +6,10 @@
 
 use bevy::prelude::*;
 
-use super::{MoverLock, Player, SETTLE_TIMEOUT};
+use super::{FarSight, MoverLock, Player, ViewSubject, SETTLE_TIMEOUT};
 use benilla_world::terrain_stream::{ViewFocus, WorldLoadProgress};
 use benilla_world::view::Viewer;
+use benilla_world::world_map::CurrentMap;
 
 /// Tells the world where the avatar's body is ([`Viewer`]), with the focus's position and gate.
 pub(super) fn publish_viewer(
@@ -57,7 +58,11 @@ pub(super) fn publish_view_focus(
     mut player: Option<ResMut<Player>>,
     roster: Option<Res<crate::glue_session::roster::Roster>>,
     cinematic: Option<Res<crate::cinematic::Cinematic>>,
+    far_sight: Option<Res<FarSight>>,
+    view_subject: Option<Res<ViewSubject>>,
+    current_map: Option<Res<CurrentMap>>,
     mut was_flying: Local<bool>,
+    mut spectate_flag: Local<Option<bool>>,
 ) {
     let entry = roster
         .as_deref()
@@ -83,6 +88,27 @@ pub(super) fn publish_view_focus(
         .as_deref()
         .map_or(0, |p| p.reloads)
         .wrapping_add(cinematic.as_deref().map_or(0, |c| c.reloads()));
+    // Phase 1 spectator streaming (opt-in, WOW_SPECTATE_STREAM): while the view is "out" on another
+    // unit through far sight, stream around the SUBJECT, not our parked body, so its ground and
+    // buildings load without `.appear`. Same-map only for now — the subject's map is the map we are
+    // on; following the subject across a map/instance boundary is a later phase (needs the server to
+    // replicate the subject on the new map). The subject's pose is the one `publish_view_subject`
+    // already resolves for the camera rig (a one-frame lag into the stream focus is harmless).
+    let spectating = *spectate_flag.get_or_insert_with(|| {
+        std::env::var("WOW_SPECTATE_STREAM").is_ok_and(|v| v != "0")
+    });
+    if spectating {
+        if let (Some(fs), Some(vs)) = (far_sight.as_deref(), view_subject.as_deref()) {
+            if fs.on() {
+                if let Some(remote) = vs.remote {
+                    let map = current_map.as_deref().map_or(0, |m| m.0);
+                    let wow = benilla_assets::coords::bevy_to_wow(remote.feet);
+                    *focus = ViewFocus::spectate(map, wow, true).with_reload(reloads);
+                    return;
+                }
+            }
+        }
+    }
     // Spawn caps pace only a live avatar in a settled world; through entry, a teleport or a world
     // swap a cap would only lengthen the load.
     *focus = match player.as_deref() {
