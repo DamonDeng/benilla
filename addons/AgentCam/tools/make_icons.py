@@ -228,6 +228,15 @@ def g_obs():
             (rrect(0.18, 0.64, 0.5, 0.76, 0.03), (200, 120, 255))]
 
 
+def g_team():
+    # Three heads and shoulders: a group.
+    def person(cx, cy, s):
+        return union(circle(cx, cy - 0.12 * s, 0.09 * s),
+                     rrect(cx - 0.15 * s, cy, cx + 0.15 * s, cy + 0.2 * s, 0.07 * s))
+    return [(union(person(0.28, 0.52, 0.8), person(0.72, 0.52, 0.8)), (170, 200, 230)),
+            (person(0.5, 0.48, 1.0), WHITE)]
+
+
 # name: (glyph, tile top colour, tile bottom colour)
 ICONS = {
     "view": (g_view, (130, 80, 200), (55, 25, 100)),
@@ -243,6 +252,7 @@ ICONS = {
     "gm": (g_gm, (150, 40, 50), (70, 15, 25)),
     "settings": (g_settings, (120, 125, 135), (50, 52, 58)),
     "obs": (g_obs, (70, 80, 95), (25, 28, 35)),
+    "team": (g_team, (60, 140, 120), (20, 65, 55)),
 }
 
 

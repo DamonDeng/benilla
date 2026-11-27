@@ -49,6 +49,28 @@ end
 local function Num(s) return tonumber(s or "") or 0 end
 
 -- An icon name ("Spell_Holy_Heal") or a full path, else the spell's icon learned earlier.
+-- The server (ObsMgr) writes names with ';' ',' ':' '|' as spaces, and an aura's name cut to 24
+-- bytes: "Power Word: Fortitude" arrives as "Power Word  Fortitude". Index each table under that
+-- form too, once, and look a name up there when the exact name misses.
+local cleanIndex = {} -- [table] = { [cleaned name] = value, [cleaned name cut to 24] = value }
+local function Cleaned(name)
+	return (string.gsub(name, "[;,:|]", " "))
+end
+local function ServerName(name, tbl)
+	local idx = cleanIndex[tbl]
+	if not idx then
+		idx = {}
+		for k, v in pairs(tbl) do
+			local c = Cleaned(k)
+			if idx[c] == nil then idx[c] = v end
+			local cut = string.sub(c, 1, 24)
+			if idx[cut] == nil then idx[cut] = v end
+		end
+		cleanIndex[tbl] = idx
+	end
+	return idx[name]
+end
+
 local function Icon(icon, spell)
 	if icon and icon ~= "" then
 		if not string.find(icon, "\\", 1, true) then icon = "Interface\\Icons\\" .. icon end
@@ -56,8 +78,9 @@ local function Icon(icon, spell)
 		return icon
 	end
 	if spell and odb and odb.icons[spell] then return odb.icons[spell] end
-	-- the combat log names spells only: the table generated from Spell.dbc (AgentCamSpellIcons.lua)
-	local file = spell and AgentCam_SpellIcons and AgentCam_SpellIcons[spell]
+	-- the server leaves icon empty and the combat log names spells only: the table generated from
+	-- Spell.dbc (AgentCamSpellIcons.lua), by the exact name or the server's cleaned one
+	local file = spell and AgentCam_SpellIcons and (AgentCam_SpellIcons[spell] or ServerName(spell, AgentCam_SpellIcons))
 	if file then return "Interface\\Icons\\" .. file end
 	return QUESTION
 end
@@ -135,6 +158,7 @@ HANDLERS.G = function(f)
 	end
 	if part >= total then
 		o.group = { kind = f[3], leader = f[4] ~= "" and f[4] or nil, members = acc }
+		if AgentCam_Roster then AgentCam_Roster(o.name, acc) end
 		groupParts[key] = nil
 	end
 end
@@ -296,7 +320,7 @@ local function SetAura(list, spell, on)
 		if list[i].spell == spell then table.remove(list, i) end
 	end
 	if on and table.getn(list) < MAX_AURAS then
-		local ms = AgentCam_SpellDurations and AgentCam_SpellDurations[spell]
+		local ms = AgentCam_SpellDurations and (AgentCam_SpellDurations[spell] or ServerName(spell, AgentCam_SpellDurations))
 		table.insert(list, { spell = spell, icon = Icon(nil, spell), ends = ms and GetTime() + ms / 1000 or nil })
 	end
 end
@@ -748,6 +772,10 @@ function AgentCamObs_Toggle(arg)
 	if bg then
 		odb.bg = math.max(0, math.min(100, tonumber(bg))) / 100
 		panel.ApplyBg()
+		return
+	end
+	if low == "retry" then
+		if AgentCam_RetrySubscribe then AgentCam_RetrySubscribe() end
 		return
 	end
 	if low == "dock" then
