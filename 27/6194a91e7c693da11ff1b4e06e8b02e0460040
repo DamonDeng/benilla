@@ -1,0 +1,19 @@
+addons/AgentCam/AgentCamObs.lua
+  s_885a88914a260d::t_87374e7d721372 130-131
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "276194a91e7c693da11ff1b4e06e8b02e0460040",
+  "prompts": {},
+  "sessions": {
+    "s_885a88914a260d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6628221e-40d8-472e-aa7e-12376fd31bee",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "linyesh <linyesh@amazon.com>"
+    }
+  }
+}
