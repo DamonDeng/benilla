@@ -127,6 +127,8 @@ HANDLERS.U = function(f)
 	o.class = f[3] ~= "" and string.upper(f[3]) or o.class
 	o.level = Num(f[4])
 	o.hp, o.hpMax, o.mp, o.mpMax, o.ptype = Num(f[5]), Num(f[6]), Num(f[7]), Num(f[8]), Num(f[9])
+	-- the server keeps rage in tenths (0..1000); the client's own bars show 0..100
+	if o.ptype == 1 then o.mp, o.mpMax = math.floor(o.mp / 10), math.floor(o.mpMax / 10) end
 	o.zone = f[10]
 	local flags = f[11] or ""
 	o.dead = string.find(flags, "d", 1, true) ~= nil
