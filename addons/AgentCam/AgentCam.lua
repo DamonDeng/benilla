@@ -76,9 +76,27 @@ local function IsActive(slot)
 	return db.on[slot] and db.names[slot] and db.names[slot] ~= ""
 end
 
+-- Team view (/ac team): the panel lists another player's group instead of the ticked agents.
+-- Its rows are virtual slots TEAM_BASE + n over team.members, so the slot-based code (current,
+-- pending, the keys) works unchanged; NameOf reads either kind.
+local TEAM_BASE = 100
+local team -- nil, or { lead = name, members = { names } }
+
+local Subscribe -- defined with the WOWOBS feed; UpdateButtons calls it
+
+local function NameOf(slot)
+	if not slot then return nil end
+	if slot > TEAM_BASE then return team and team.members[slot - TEAM_BASE] end
+	return db.names[slot]
+end
+
 -- The active slots in slot order: the panel's rows, the keys' and /ac N's numbering, the rotation.
 local function ActiveSlots()
 	local list = {}
+	if team then
+		for n = 1, table.getn(team.members) do table.insert(list, TEAM_BASE + n) end
+		return list
+	end
 	for slot = 1, MAX_AGENTS do
 		if IsActive(slot) then table.insert(list, slot) end
 	end
@@ -127,10 +145,13 @@ local UpdateAutoText -- defined with the auto director
 
 local function UpdateButtons()
 	if not frame then return end
+	if Subscribe then Subscribe() end
+	frame.title:SetText(team and ("|cff33ff99Team|r " .. team.lead) or "AgentCam")
+	frame.teamButton:SetOn(team ~= nil)
 	LayoutPanel()
 	frame.autoButton:SetOn(db.auto)
 	frame.camButton:SetOn(db.farCam)
-	frame.gmButton:SetOn(gmOn ~= false and invisible ~= false)
+	frame.gmButton:SetOn(gmOn ~= false and invisible == true)
 	local status = "click name: " .. db.mode
 	if following then status = status .. " | following" end
 	frame.statusBase = status
@@ -177,7 +198,7 @@ end
 function AgentCam_Switch(i, mode)
 	if Off() then return end
 	mode = mode or db.mode
-	local name = db.names[i]
+	local name = NameOf(i)
 	if not name or name == "" then
 		Print("slot " .. i .. " has no name; set it in /ac config")
 		return
@@ -290,7 +311,7 @@ end
 -- Teleport your body beside agent slot `i` (no view change unless a follow is running).
 function AgentCam_Teleport(i)
 	if Off() then return end
-	local name = db.names[i]
+	local name = NameOf(i)
 	if not name or name == "" then return end
 	if following then Release() end -- the jump would break the follow anyway
 	EnsureInvisible()
@@ -309,7 +330,7 @@ function AgentCam_Go(who)
 			Print("no agent #" .. n .. " on the panel")
 			return
 		end
-		name = db.names[slot]
+		name = NameOf(slot)
 	elseif not who or who == "" then
 		if not UnitExists("target") or not UnitIsPlayer("target") then
 			Print("target a player first, or /ac go <name>")
@@ -359,11 +380,11 @@ function AgentCam_ToggleCamera()
 	Print(db.farCam and "far camera (50 yd)" or "normal camera")
 end
 
--- GM mode and invisibility as one switch: both on, or both off. A mixed state (one changed by
--- hand or by the server) counts as off, so the next click turns both on.
+-- GM mode and invisibility as one switch: both on, or both off. A mixed or unknown state (one
+-- changed by hand, or no server reply yet) counts as off, so the next click turns both on.
 function AgentCam_ToggleGMInvis()
 	if Off() then return end
-	if gmOn ~= false and invisible ~= false then
+	if gmOn ~= false and invisible == true then
 		Cmd(".gm visible on") -- visibility first: it is a GM-mode command
 		Cmd(".gm off")
 		Print("GM mode off and visible: players see you, monsters can attack you")
@@ -382,7 +403,19 @@ local SERVER_STATE = {
 	["You are now visible."] = function() invisible = false end,
 }
 
+-- .obs answered "There is no such command" (the server lacks it, or it needs a higher GM level
+-- than the spectator's): stop sending it this session instead of repeating the error every minute.
+local obsSentAt = -100
+local obsUnsupported
+local obsMissing = {} -- [lower name] = true: left out by the last .obs ("obs: X not online")
 local function OnServerLine()
+	-- the server's answers to .obs (ObsMgr): "obs: <name> not online", "obs: a, b" (subscribed)
+	local _, _, gone = string.find(arg1 or "", "^obs: (%S+) not online$")
+	if gone then obsMissing[Lower(gone)] = true end
+	if arg1 == "There is no such command" and GetTime() - obsSentAt < 3 and not obsUnsupported then
+		obsUnsupported = true
+		Print("the server does not accept .obs for this account (\"There is no such command\"): no WOWOBS subscription, the bars stay empty. /ac obs retry after the server is updated")
+	end
 	local f = arg1 and SERVER_STATE[arg1]
 	if f then
 		f()
@@ -407,15 +440,24 @@ local CLASS_TCOORDS = {
 }
 local UpdateBars -- defined with the frame
 
+-- A name the panel can show: a ticked slot's, or a member of the team being viewed.
+local function Listed(key)
+	for i = 1, MAX_AGENTS do
+		if db.names[i] and Lower(db.names[i]) == key then return true end
+	end
+	if team then
+		for _, m in ipairs(team.members) do
+			if Lower(m) == key then return true end
+		end
+	end
+	return false
+end
+
 local function Capture(unit)
 	local n = UnitName(unit)
 	if not n then return end -- matched by name against the agent slots below
 	local key = Lower(n)
-	local ours
-	for i = 1, MAX_AGENTS do
-		if db.names[i] and Lower(db.names[i]) == key then ours = true break end
-	end
-	if not ours then return end
+	if not Listed(key) then return end
 	-- Only the class, for the row's icon. Health, power and experience come from the server's
 	-- WOWOBS records alone (AgentCam_Feed): the old target-swap scan is gone.
 	local _, class = UnitClass(unit)
@@ -431,13 +473,13 @@ end
 -- the observe panel at once, not when the hop lands.
 function AgentCam_Watched()
 	if pending and pending.name then return pending.name end
-	return current and db and db.names[current] or nil
+	return current and db and NameOf(current) or nil
 end
 
 function AgentCam_Agents()
 	local t = {}
 	if not db then return t end
-	for _, slot in ipairs(ActiveSlots()) do table.insert(t, db.names[slot]) end
+	for _, slot in ipairs(ActiveSlots()) do table.insert(t, NameOf(slot)) end
 	return t
 end
 
@@ -450,11 +492,7 @@ end
 function AgentCam_Feed(name, st)
 	local key = Lower(name)
 	if not key or not db then return end
-	local ours
-	for i = 1, MAX_AGENTS do
-		if db.names[i] and Lower(db.names[i]) == key then ours = true break end
-	end
-	if not ours then return end
+	if not Listed(key) then return end
 	if st.class then db.classes[key] = st.class end
 	stats[key] = {
 		hp = st.hp, hpMax = st.hpMax, mp = st.mp, mpMax = st.mpMax, ptype = st.ptype,
@@ -474,9 +512,118 @@ local function OnPanelEvent()
 	end
 end
 
+------------------------------------------------------------------------------- subscription
+
+-- The server pushes WOWOBS records only for the names a spectator subscribed with .obs (the
+-- subscribed agents and their group members; see OBS_SERVER.md). AgentCam keeps that list equal
+-- to what the panel shows: the ticked agents, or in team view the team's lead. A repeat of the
+-- same list is not sent again; nothing is sent before the world is entered.
+local entered -- PLAYER_ENTERING_WORLD has been seen this session
+local subscribed -- the list the subscription stands for
+local prevSent -- the last .obs argument actually sent
+local resubElapsed = 0
+
+local function WantedList()
+	local names = {}
+	if team then
+		names = { team.lead }
+	else
+		for _, slot in ipairs(ActiveSlots()) do table.insert(names, NameOf(slot)) end
+	end
+	return table.concat(names, " ")
+end
+
+-- Send the list now: .obs off for the old one first (the server replaces it anyway; this makes
+-- the drop explicit), then .obs with the new one.
+local function SendSubscription(arg)
+	subscribed, resubElapsed, obsMissing = arg, 0, {}
+	if obsUnsupported then return end
+	obsSentAt = GetTime()
+	if prevSent and prevSent ~= "" then Cmd(".obs off") end
+	prevSent = arg
+	if arg ~= "" then Cmd(".obs " .. arg) end
+end
+
+-- /ac obs retry: try .obs again (after the server gains it).
+function AgentCam_RetrySubscribe()
+	obsUnsupported, subscribed, prevSent = nil, nil, nil
+	if Subscribe then Subscribe() end
+end
+
+-- A settings change: the list is sent SUB_SETTLE seconds after the last change, so ticking five
+-- boxes in a row sends one .obs, not five (TickResubscribe sends it).
+local SUB_SETTLE = 1
+local subDue -- GetTime() at which a changed list is sent
+Subscribe = function()
+	if not entered or db.enabled == false then return end
+	if WantedList() == subscribed then subDue = nil return end
+	subDue = GetTime() + SUB_SETTLE
+end
+
+-- The server keeps a subscribed character that logs off and resumes it when it returns, but a
+-- name offline when .obs was sent is answered "obs: <name> not online" and left out. So while
+-- the last reply left a name out, send the list again every RESUB_EVERY seconds.
+local RESUB_EVERY = 60
+local function TickResubscribe(dt)
+	if subDue and GetTime() >= subDue then
+		subDue = nil
+		local arg = WantedList()
+		if arg ~= subscribed then SendSubscription(arg) end
+	end
+	if not entered or not subscribed or subscribed == "" then return end
+	resubElapsed = resubElapsed + dt
+	if resubElapsed < RESUB_EVERY then return end
+	resubElapsed = 0
+	if obsUnsupported or not next(obsMissing) then return end
+	obsSentAt = GetTime()
+	obsMissing = {}
+	Cmd(".obs " .. subscribed) -- the same list again: no .obs off first
+end
+-- Team view on `name` (no name: your target), or back to the ticked agents when already on it.
+-- The rows fill from the lead's G record; until then the team is just the lead.
+function AgentCam_Team(name)
+	if Off() then return end
+	if not name or name == "" then
+		if team then name = nil
+		elseif UnitExists("target") and UnitIsPlayer("target") then name = UnitName("target")
+		else
+			Print("target a player first, or /ac team <name>")
+			return
+		end
+	end
+	if team and (not name or Lower(name) == Lower(team.lead) or name == "off") then
+		Release()
+		current = nil
+		team = nil
+		Print("back to your agents")
+	elseif name ~= "off" then
+		Release()
+		current = nil
+		team = { lead = name, members = { name } }
+		Print("team view: " .. name .. "'s group (subscribing with .obs)")
+	end
+	UpdateButtons()
+end
+
+-- From AgentCamObs: a G record's members. Fills the team view when it is the lead's group.
+function AgentCam_Roster(name, members)
+	if not team or Lower(name) ~= Lower(team.lead) then return end
+	local list, seen = {}, {}
+	for _, m in ipairs(members) do
+		if m ~= "" and not seen[Lower(m)] then table.insert(list, m) seen[Lower(m)] = true end
+	end
+	if not seen[Lower(team.lead)] then table.insert(list, 1, team.lead) end
+	local same = table.getn(list) == table.getn(team.members)
+	for i = 1, table.getn(list) do if list[i] ~= team.members[i] then same = false end end
+	if same then return end
+	team.members = list
+	if current and current > TEAM_BASE + table.getn(list) then Release() current = nil end
+	UpdateButtons()
+end
+
 function AgentCam_Screenshot()
 	if Off() then return end
-	local who = current and db.names[current] or UnitName("player")
+	local who = current and NameOf(current) or UnitName("player")
 	Print(date("%Y-%m-%d %H:%M:%S") .. " | " .. who .. " | " .. (GetZoneText() or "") ..
 		" / " .. (GetMinimapZoneText() or ""))
 	Screenshot()
@@ -548,7 +695,7 @@ local autoTextElapsed = 0
 local function TickAuto()
 	autoElapsed = autoElapsed + arg1
 	if autoElapsed < db.autoInterval then return end
-	if current and Lower(UnitName("target")) == Lower(db.names[current]) and UnitAffectingCombat("target") then
+	if current and Lower(UnitName("target")) == Lower(NameOf(current)) and UnitAffectingCombat("target") then
 		autoElapsed = db.autoInterval - 5 -- hold the shot while it fights; look again in 5 s
 		autoHolding = true
 		return
@@ -571,9 +718,9 @@ UpdateAutoText = function(force, dt)
 	local left = math.max(0, math.ceil(db.autoInterval - autoElapsed))
 	local nextSlot = StepSlot(1)
 	if autoHolding and current then
-		frame.statusText:SetText("|cffff8000holding:|r " .. db.names[current] .. " is fighting")
+		frame.statusText:SetText("|cffff8000holding:|r " .. NameOf(current) .. " is fighting")
 	elseif nextSlot then
-		frame.statusText:SetText("next: |cffffffff" .. db.names[nextSlot] .. "|r in " .. left .. "s")
+		frame.statusText:SetText("next: |cffffffff" .. NameOf(nextSlot) .. "|r in " .. left .. "s")
 	else
 		frame.statusText:SetText("auto: no agents ticked")
 	end
@@ -600,7 +747,7 @@ local function TickInfo()
 	infoElapsed = infoElapsed + arg1
 	if infoElapsed < 0.25 then return end
 	infoElapsed = 0
-	local name = current and db.names[current]
+	local name = current and NameOf(current)
 	-- the observe panel shows all of this and more
 	if AgentCamObs_IsShown and AgentCamObs_IsShown() then
 		info:Hide()
@@ -633,6 +780,7 @@ local function OnUpdate()
 		if UpdateBars then UpdateBars() end
 	end
 	if db.auto then TickAuto() end
+	TickResubscribe(arg1)
 	UpdateAutoText(false, arg1)
 	TickInfo()
 end
@@ -683,7 +831,7 @@ local ICON = 24
 -- changed file, a new file needs a client restart.
 local ICON_DIR = "Interface\\AddOns\\AgentCam\\icons\\"
 local ICONS = {}
-for _, k in ipairs({ "view", "follow", "watch", "me", "go", "auto", "cam", "invis", "shot", "dismount", "gm", "settings", "obs" }) do
+for _, k in ipairs({ "view", "follow", "watch", "me", "go", "auto", "cam", "invis", "shot", "dismount", "gm", "settings", "obs", "team" }) do
 	ICONS[k] = ICON_DIR .. k
 end
 
@@ -741,6 +889,7 @@ local function BuildFrame()
 	end
 
 	local title = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+	frame.title = title
 	title:SetPoint("TOP", frame, "TOP", 0, -8)
 	title:SetText("AgentCam")
 	local gear = CreateFrame("Button", "AgentCamGear", frame)
@@ -833,16 +982,16 @@ local function BuildFrame()
 		row.name = b
 		b:SetScript("OnEnter", function()
 			local slot = this:GetParent().slot
-			local st = slot and stats[Lower(db.names[slot])]
+			local st = slot and stats[Lower(NameOf(slot))]
 			GameTooltip:SetOwner(this, "ANCHOR_LEFT")
-			GameTooltip:SetText(db.names[slot] or "?")
+			GameTooltip:SetText(NameOf(slot) or "?")
 			if st then
 				local power = ({ [0] = "Mana", [1] = "Rage", [3] = "Energy" })[st.ptype] or "Power"
 				GameTooltip:AddLine("HP " .. st.hp .. " / " .. st.hpMax .. (st.dead and "  (dead)" or "") .. (st.offline and "  (offline)" or ""), 0.4, 1, 0.4)
 				if st.mpMax and st.mpMax > 0 then
 					GameTooltip:AddLine(power .. " " .. st.mp .. " / " .. st.mpMax, 0.5, 0.7, 1)
 				end
-				local x = xps[Lower(db.names[slot])]
+				local x = xps[Lower(NameOf(slot))]
 				if x then
 					GameTooltip:AddLine(string.format("XP %d / %d (%d%%)", x.xp, x.xpMax, math.floor(100 * x.xp / x.xpMax)), 0.75, 0.5, 1)
 				end
@@ -860,7 +1009,7 @@ local function BuildFrame()
 			bar:SetMinMaxValues(0, 1)
 			local bg = bar:CreateTexture(nil, "BACKGROUND")
 			bg:SetAllPoints(bar)
-			bg:SetTexture(0, 0, 0, 0.6)
+			bg:SetTexture(0.15, 0.15, 0.15, 0.8)
 			-- the value on the bar, small and outlined so it reads over any colour
 			bar.text = bar:CreateFontString(nil, "OVERLAY")
 			bar.text:SetFont("Fonts\\ARIALN.TTF", h + 1, "OUTLINE")
@@ -895,7 +1044,7 @@ local function BuildFrame()
 	tools = CreateFrame("Frame", nil, frame)
 	tools:SetWidth(W)
 	tools:SetHeight(ICON + 4)
-	local gap = (inner - 6 * ICON) / 5
+	local gap = (inner - 7 * ICON) / 6
 	local function Col(k) return PAD + (k - 1) * (ICON + gap) end
 	IconButton("AgentCamButtonMe", Col(1), 0, ICONS.me, "Back to me", "Return the camera to your own body.",
 		"Alt-0", AgentCam_Reset)
@@ -907,17 +1056,24 @@ local function BuildFrame()
 	frame.gmButton = IconButton("AgentCamGM", Col(4), 0, ICONS.gm, "GM mode + invisibility",
 		"Lit: GM mode on and invisible (.gm on, .gm visible off). Grey: both off, a visible normal player that monsters can attack. One click switches both.",
 		"Alt-H / Alt-V", AgentCam_ToggleGMInvis, true)
-	IconButton("AgentCamShot", Col(5), 0, ICONS.shot, "Screenshot",
+	frame.teamButton = IconButton("AgentCamTeam", Col(5), 0, ICONS.team, "Team view",
+		"Target a player and click: the list shows that player's group (subscribed with .obs), each member's bars from the server. Click again: back to your agents. /ac team <name>.",
+		nil, function() AgentCam_Team() end, true)
+	IconButton("AgentCamShot", Col(6), 0, ICONS.shot, "Screenshot",
 		"Print time, agent and zone to chat, then take a screenshot.", "Alt-S", AgentCam_Screenshot)
-	IconButton("AgentCamDismount", Col(6), 0, ICONS.dismount, "Dismount", "Send .dismount.", nil,
+	IconButton("AgentCamDismount", Col(7), 0, ICONS.dismount, "Dismount", "Send .dismount.", nil,
 		function() Cmd(".dismount") end)
 
+	-- How many listed agents the server is feeding (a U record in the last STALE seconds):
+	-- 0 means no WOWOBS data, so the bars stay empty (not subscribed, or the server not sending).
+	frame.dataText = frame:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+	frame.dataText:SetPoint("BOTTOMLEFT", frame, "BOTTOMLEFT", 10, 7)
 	frame.statusText = frame:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
 	frame.statusText:SetPoint("BOTTOM", frame, "BOTTOM", 0, 7)
 
 	-- Width: fitted to the longest name, or the width the grip was dragged to (db.width); never
 	-- narrower than the tool row. A hidden string measures the names in the buttons' font.
-	local MIN_W = 2 * PAD + 6 * ICON + 5 * 2
+	local MIN_W = 2 * PAD + 7 * ICON + 6 * 2
 	local ICONS_W = table.getn(ROW_ACTIONS) * (RI + 2)
 	local BAR_W = 96
 	local CLASS_W = 20
@@ -927,7 +1083,7 @@ local function BuildFrame()
 	local function FitWidth(list)
 		local widest = 0
 		for i = 1, table.getn(list) do
-			measure:SetText(i .. ". " .. db.names[list[i]])
+			measure:SetText(i .. ". " .. NameOf(list[i]))
 			widest = math.max(widest, measure:GetStringWidth())
 		end
 		return math.max(MIN_W, math.ceil(2 * PAD + widest + 8 + 2 + BarsW() + ICONS_W))
@@ -1033,9 +1189,15 @@ local function BuildFrame()
 	UpdateBars = function()
 		if db.bars == false then return end
 		local now = GetTime()
+		local live, total = 0, 0
 		for i = 1, MAX_AGENTS do
 			local row = buttons[i]
-			local key = row.slot and Lower(db.names[row.slot])
+			if row.slot then
+				total = total + 1
+				local s0 = stats[Lower(NameOf(row.slot))]
+				if s0 and now - s0.t <= STALE then live = live + 1 end
+			end
+			local key = row.slot and Lower(NameOf(row.slot))
 			local st = key and stats[key]
 			local tc = key and CLASS_TCOORDS[db.classes[key] or ""]
 			if tc then
@@ -1052,7 +1214,7 @@ local function BuildFrame()
 				local c = POWER_COLOR[st.ptype] or POWER_COLOR[0]
 				row.mp:SetStatusBarColor(c[1], c[2], c[3])
 				row.mp:SetValue((st.mpMax and st.mpMax > 0) and st.mp / st.mpMax or 0)
-				row.hp.text:SetText(st.dead and "dead" or (st.hp .. " / " .. st.hpMax))
+				row.hp.text:SetText(st.offline and "offline" or st.dead and "dead" or (st.hp .. " / " .. st.hpMax))
 				row.mp.text:SetText((st.mpMax and st.mpMax > 0) and (st.mp .. " / " .. st.mpMax) or "")
 				-- dimmed when stale or offline (the server's last U before it unsubscribes the agent)
 				local a = (st.offline or now - st.t > STALE) and 0.45 or 1
@@ -1062,7 +1224,7 @@ local function BuildFrame()
 			else
 				row.hp:SetValue(0)
 				row.mp:SetValue(0)
-				row.hp.text:SetText("")
+				row.hp.text:SetText("|cff808080no data|r")
 				row.mp.text:SetText("")
 				row.hp:SetAlpha(0.45)
 				row.mp:SetAlpha(0.45)
@@ -1074,6 +1236,11 @@ local function BuildFrame()
 			else
 				row.xp:Hide()
 			end
+		end
+		if total > 0 then
+			frame.dataText:SetText((live > 0 and "|cff40ff40" or "|cffff4040") .. "data " .. live .. "/" .. total .. "|r")
+		else
+			frame.dataText:SetText("")
 		end
 	end
 
@@ -1095,7 +1262,8 @@ local function BuildFrame()
 		frame.grip:Show()
 		local list = ActiveSlots()
 		if not frame.sizing then
-			local w = db.width and math.max(MIN_W, db.width) or FitWidth(list)
+			-- a width dragged before the bars grew must not cut the names: never under the fit
+			local w = db.width and math.max(FitWidth(list), db.width) or FitWidth(list)
 			frame:SetWidth(w)
 			LayoutRows(w)
 		end
@@ -1107,7 +1275,7 @@ local function BuildFrame()
 			local slot = list[i]
 			if slot then
 				b.slot = slot
-				b.name:SetText(i .. ". " .. db.names[slot])
+				b.name:SetText(i .. ". " .. NameOf(slot))
 				b:ClearAllPoints()
 				b:SetPoint("TOPLEFT", frame, "TOPLEFT", PAD, top - (i - 1) * ROW)
 				if current == slot then b.name:LockHighlight() else b.name:UnlockHighlight() end
@@ -1456,7 +1624,7 @@ local function Help()
 	Print("/ac <n> | next | prev | me          -- switch to panel agent n (right-click = teleport)")
 	Print("/ac mode view|follow|watch          -- eyes / free follow / .watch")
 	Print("/ac go [n|Name]                     -- teleport to panel agent n, any player, or your target")
-	Print("/ac auto [secs] | cam | gm | shot | info -- director, far camera, GM mode + invisibility, screenshot, overlay")
+	Print("/ac auto [secs] | cam | gm | autogm | shot | info -- director, far camera, GM mode + invisibility (autogm: on at login), screenshot, overlay")
 	Print("/ac obs [Name|auto|dock|bg 0-100] -- observe panel: cast, casts, cooldowns, auras; drag it anywhere, dock puts it back, bg sets its background opacity")
 	Print("/ac config | enable | disable | set <slot> <Name> | all | none | list | keys | show | hide")
 end
@@ -1492,6 +1660,11 @@ SlashCmdList["AGENTCAM"] = function(msg)
 		AgentCam_ToggleCamera()
 	elseif cmd == "invis" or cmd == "gm" then
 		AgentCam_ToggleGMInvis()
+	elseif cmd == "team" then
+		AgentCam_Team(rest)
+	elseif cmd == "autogm" then
+		db.autoGM = (db.autoGM == false) and true or false
+		Print(db.autoGM and "on login: GM mode on and invisible" or "on login: GM mode and visibility left as they are")
 	elseif cmd == "shot" then
 		AgentCam_Screenshot()
 	elseif cmd == "obs" then
@@ -1560,6 +1733,14 @@ loader:SetScript("OnEvent", function()
 		HookOptionsAddOnsTab()
 	elseif event == "PLAYER_ENTERING_WORLD" and db then
 		if db.farCam then ApplyCamera() end
+		-- The spectator logs in with GM mode on but visible: switch both on (the toolbar switch's
+		-- "on" state) unless that is turned off (/ac autogm). The server's replies set the icon.
+		if db.autoGM ~= false and db.enabled ~= false then
+			Cmd(".gm on")
+			Cmd(".gm visible off")
+		end
+		entered = true
+		Subscribe()
 		this:UnregisterEvent("PLAYER_ENTERING_WORLD")
 	end
 end)

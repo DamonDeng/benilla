@@ -28,7 +28,8 @@ Restart the client after adding the folder or an icon; `/reload` picks up edits 
   default mode from the settings (also what Alt-1..5 and the auto director use). The lit icon
   shows what is engaged on which agent. Under the list: back to me, auto director, far camera,
   GM mode + invisibility (one switch: `.gm on` + `.gm visible off`, or both off), screenshot,
-  dismount; the GM icon follows the server's replies, whoever sent the command. The gear opens the settings.
+  dismount; the GM icon follows the server's replies, whoever sent the command. At login
+  AgentCam turns both on (`/ac autogm` turns that off and on). The gear opens the settings.
 - Settings: `/ac config`, the gear, or the Options window's AddOns tab. Up to 20 agent slots: a
   slot counts when it is ticked **and** named; Enable all / Disable all tick every slot. Four
   are ticked on a fresh install.
@@ -56,6 +57,12 @@ Restart the client after adding the folder or an icon; `/reload` picks up edits 
   border). Clicking an agent's
   name opens it on that agent; the bars icon at the panel's top left and `/ac obs` toggle it
   (`/ac obs <Name>` pins one agent, `/ac obs auto` follows the viewed agent again).
+- Team view: target any player and click the team icon (or `/ac team <name>`): the list shows
+  that player's group, filled from the server's `G` record, with each member's bars; the title
+  reads "Team <name>". Clicking a member works as for an agent. Click the icon again (or
+  `/ac team off`) to go back to your agents.
+- Subscription: AgentCam sends `.obs` itself after login and whenever the list changes: the
+  ticked agents, or in team view the team's lead (the server adds the lead's group).
 - Data: the server's `WOWOBS` addon messages ([OBS_PROTOCOL.md](OBS_PROTOCOL.md),
   [OBS_SERVER.md](OBS_SERVER.md)) are the only source of the row bars and the cooldowns. Until
   the server sends them, casts and auras come from the combat log nearby and the bars stay empty.
