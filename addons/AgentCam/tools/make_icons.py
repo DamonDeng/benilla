@@ -221,6 +221,13 @@ def g_settings():
     return [(gear, WHITE)]
 
 
+def g_obs():
+    # Stat bars (health, power, experience): the observe panel.
+    return [(rrect(0.18, 0.24, 0.82, 0.36, 0.03), (90, 220, 90)),
+            (rrect(0.18, 0.44, 0.66, 0.56, 0.03), (110, 150, 255)),
+            (rrect(0.18, 0.64, 0.5, 0.76, 0.03), (200, 120, 255))]
+
+
 # name: (glyph, tile top colour, tile bottom colour)
 ICONS = {
     "view": (g_view, (130, 80, 200), (55, 25, 100)),
@@ -235,6 +242,7 @@ ICONS = {
     "dismount": (g_dismount, (150, 95, 55), (70, 40, 20)),
     "gm": (g_gm, (150, 40, 50), (70, 15, 25)),
     "settings": (g_settings, (120, 125, 135), (50, 52, 58)),
+    "obs": (g_obs, (70, 80, 95), (25, 28, 35)),
 }
 
 

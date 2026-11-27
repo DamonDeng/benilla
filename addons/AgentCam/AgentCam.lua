@@ -34,9 +34,10 @@ BINDING_NAME_AGENTCAM_MODE = "Cycle mode (view / follow / watch)"
 BINDING_NAME_AGENTCAM_AUTO = "Toggle auto director"
 BINDING_NAME_AGENTCAM_GOTARGET = "Teleport to target player"
 BINDING_NAME_AGENTCAM_CAM = "Toggle far camera"
-BINDING_NAME_AGENTCAM_INVIS = "Toggle GM invisibility"
-BINDING_NAME_AGENTCAM_GM = "Toggle GM mode"
+BINDING_NAME_AGENTCAM_INVIS = "Toggle GM mode + invisibility"
+BINDING_NAME_AGENTCAM_GM = "Toggle GM mode + invisibility"
 BINDING_NAME_AGENTCAM_SHOT = "Screenshot with caption"
+BINDING_NAME_AGENTCAM_OBS = "Toggle the observe panel"
 
 local db -- AgentCamDB after load
 local current -- slot (1..MAX_AGENTS) of the agent being viewed, or nil
@@ -129,8 +130,7 @@ local function UpdateButtons()
 	LayoutPanel()
 	frame.autoButton:SetOn(db.auto)
 	frame.camButton:SetOn(db.farCam)
-	frame.invisButton:SetOn(invisible ~= false)
-	frame.gmButton:SetOn(gmOn ~= false)
+	frame.gmButton:SetOn(gmOn ~= false and invisible ~= false)
 	local status = "click name: " .. db.mode
 	if following then status = status .. " | following" end
 	frame.statusBase = status
@@ -182,6 +182,7 @@ function AgentCam_Switch(i, mode)
 		Print("slot " .. i .. " has no name; set it in /ac config")
 		return
 	end
+	if AgentCamObs_Toggle then AgentCamObs_Toggle("auto") end -- the observe panel follows this agent
 	if pending and pending.index == i and pending.action == mode then return end -- on its way there
 	Release()
 	EnsureInvisible()
@@ -358,25 +359,17 @@ function AgentCam_ToggleCamera()
 	Print(db.farCam and "far camera (50 yd)" or "normal camera")
 end
 
-function AgentCam_ToggleInvis()
+-- GM mode and invisibility as one switch: both on, or both off. A mixed state (one changed by
+-- hand or by the server) counts as off, so the next click turns both on.
+function AgentCam_ToggleGMInvis()
 	if Off() then return end
-	if invisible == false then
-		Cmd(".gm visible off")
-	else
-		Cmd(".gm visible on")
-		Print("you will be VISIBLE to players")
-	end
-end
-
--- GM mode on/off (.gm on / .gm off). Off is a normal player: hostile mobs see and attack you,
--- and the agents' follow/faction rules apply. The icon follows the server's replies.
-function AgentCam_ToggleGM()
-	if Off() then return end
-	if gmOn == false then
-		Cmd(".gm on")
-	else
+	if gmOn ~= false and invisible ~= false then
+		Cmd(".gm visible on") -- visibility first: it is a GM-mode command
 		Cmd(".gm off")
-		Print("GM mode off: monsters can now see and attack you")
+		Print("GM mode off and visible: players see you, monsters can attack you")
+	else
+		Cmd(".gm on")
+		Cmd(".gm visible off")
 	end
 end
 
@@ -401,6 +394,7 @@ end
 -- party...), and for a player outside your group health comes as a percentage; so a row shows
 -- what was seen last, dimmed once stale. Experience is the player's alone (UnitXP("player")).
 local stats = {} -- [lower name] = { hp, hpMax, mp, mpMax, ptype, dead, t }
+local xps = {} -- [lower name] = { xp, xpMax }: only the server's WOWOBS U records carry it
 local STALE = 10 -- seconds: older readings draw dimmed
 -- The class icons on the character-create sheet, 4 a row (the glue's CLASS_ICON_TCOORDS).
 local CLASS_SHEET = "Interface\\Glues\\CharacterCreate\\UI-CharacterCreate-Classes"
@@ -422,70 +416,52 @@ local function Capture(unit)
 		if db.names[i] and Lower(db.names[i]) == key then ours = true break end
 	end
 	if not ours then return end
+	-- Only the class, for the row's icon. Health, power and experience come from the server's
+	-- WOWOBS records alone (AgentCam_Feed): the old target-swap scan is gone.
 	local _, class = UnitClass(unit)
-	if class then db.classes[key] = class end -- saved: the icon shows before the agent is seen again
+	if class and db.classes[key] ~= class then
+		db.classes[key] = class -- saved: the icon shows before the agent is seen again
+		if UpdateBars then UpdateBars() end
+	end
+end
+
+-- For AgentCamObs: the viewed agent's name, the ticked agents' names, one agent's status, and a
+-- status line fed from the server's WOWOBS messages (the only source of the row bars).
+-- The agent being watched, or the one an .appear is still taking us to: a click on a name moves
+-- the observe panel at once, not when the hop lands.
+function AgentCam_Watched()
+	if pending and pending.name then return pending.name end
+	return current and db and db.names[current] or nil
+end
+
+function AgentCam_Agents()
+	local t = {}
+	if not db then return t end
+	for _, slot in ipairs(ActiveSlots()) do table.insert(t, db.names[slot]) end
+	return t
+end
+
+function AgentCam_GetStats(name)
+	local key = Lower(name)
+	if not key or not db then return nil end
+	return stats[key], db.classes[key]
+end
+
+function AgentCam_Feed(name, st)
+	local key = Lower(name)
+	if not key or not db then return end
+	local ours
+	for i = 1, MAX_AGENTS do
+		if db.names[i] and Lower(db.names[i]) == key then ours = true break end
+	end
+	if not ours then return end
+	if st.class then db.classes[key] = st.class end
 	stats[key] = {
-		hp = UnitHealth(unit), hpMax = UnitHealthMax(unit),
-		mp = UnitMana(unit), mpMax = UnitManaMax(unit), ptype = UnitPowerType(unit),
-		dead = UnitIsDeadOrGhost(unit), t = GetTime(),
+		hp = st.hp, hpMax = st.hpMax, mp = st.mp, mpMax = st.mpMax, ptype = st.ptype,
+		dead = st.dead, offline = st.offline, t = GetTime(), obs = true,
 	}
+	if st.xpMax and st.xpMax > 0 then xps[key] = { xp = st.xp or 0, xpMax = st.xpMax } else xps[key] = nil end
 	if UpdateBars then UpdateBars() end
-end
-
--- Fast status: read one nearby agent every SCAN_EVERY seconds by targeting it for a moment, the
--- way pfUI's librange measures range: sounds and the stock target frame's events are muted for the
--- swap, pfScanActive tells pfUI's own target frame to ignore it, and the old target comes back.
-local SCAN_EVERY = 0.4
-local SCAN_MISS_BACKOFF = 10 -- seconds to skip an agent that is not around
-local scanElapsed, scanPos = 0, 0
-local scanMissAt = -100 -- GetTime() of the scan's last miss
-local scanSkip = {} -- lower-case name -> GetTime() until which it is not scanned
-
--- A miss makes the client queue ERR_UNIT_NOT_FOUND ("Unknown unit."), shown a frame later, so it
--- cannot be muted around the call: drop that line when it arrives right after a scan miss.
-local scanErrorsHooked
-local function HookScanErrors()
-	if scanErrorsHooked or not UIErrorsFrame then return end
-	scanErrorsHooked = true
-	local orig = UIErrorsFrame.AddMessage
-	UIErrorsFrame.AddMessage = function(self, msg, r, g, b, a, hold)
-		if msg and msg == ERR_UNIT_NOT_FOUND and GetTime() - scanMissAt < 1.5 then return end
-		return orig(self, msg, r, g, b, a, hold)
-	end
-end
-
-local function ScanOne()
-	if db.scan == false or db.bars == false or pending then return end
-	if UnitAffectingCombat("player") or (LootFrame and LootFrame:IsShown()) then return end
-	local list = ActiveSlots()
-	local n = table.getn(list)
-	if n == 0 then return end
-	scanPos = math.mod(scanPos, n) + 1
-	local name = db.names[list[scanPos]]
-	if (scanSkip[Lower(name)] or 0) > GetTime() then return end
-	HookScanErrors()
-	local before = UnitName("target")
-	if Lower(before) == Lower(name) then
-		Capture("target") -- already the target: read it as is
-		return
-	end
-	local playSound, targetEvent = PlaySound, TargetFrame_OnEvent
-	PlaySound = function() end
-	TargetFrame_OnEvent = function() end
-	pfScanActive = true
-	-- Open the mute window before the call: the client may show the miss's line inside it.
-	scanMissAt = GetTime()
-	TargetByName(name, true)
-	if Lower(UnitName("target")) == Lower(name) then
-		scanMissAt = -100
-		Capture("target")
-		if before then TargetLastTarget() else ClearTarget() end
-	else
-		scanSkip[Lower(name)] = GetTime() + SCAN_MISS_BACKOFF
-	end
-	pfScanActive = false
-	TargetFrame_OnEvent = targetEvent
-	PlaySound = playSound
 end
 
 local function OnPanelEvent()
@@ -495,8 +471,6 @@ local function OnPanelEvent()
 		Capture("target")
 	elseif event == "UPDATE_MOUSEOVER_UNIT" then
 		Capture("mouseover")
-	elseif arg1 == "target" or arg1 == "mouseover" then -- UNIT_HEALTH / UNIT_MANA / ...
-		Capture(arg1)
 	end
 end
 
@@ -627,6 +601,11 @@ local function TickInfo()
 	if infoElapsed < 0.25 then return end
 	infoElapsed = 0
 	local name = current and db.names[current]
+	-- the observe panel shows all of this and more
+	if AgentCamObs_IsShown and AgentCamObs_IsShown() then
+		info:Hide()
+		return
+	end
 	if not db.info or not name or Lower(UnitName("target")) ~= Lower(name) then
 		info:Hide()
 		return
@@ -648,15 +627,9 @@ local function OnUpdate()
 	if pending then TickPending() end
 	if following and not pending then TickFollow() end
 	if keeping and not pending then TickKeep(arg1) end
-	scanElapsed = scanElapsed + arg1
-	if scanElapsed >= SCAN_EVERY then
-		scanElapsed = 0
-		ScanOne()
-	end
 	barsElapsed = barsElapsed + arg1
 	if barsElapsed >= 1 then
 		barsElapsed = 0
-		if UnitExists("target") then Capture("target") end
 		if UpdateBars then UpdateBars() end
 	end
 	if db.auto then TickAuto() end
@@ -710,7 +683,7 @@ local ICON = 24
 -- changed file, a new file needs a client restart.
 local ICON_DIR = "Interface\\AddOns\\AgentCam\\icons\\"
 local ICONS = {}
-for _, k in ipairs({ "view", "follow", "watch", "me", "go", "auto", "cam", "invis", "shot", "dismount", "gm", "settings" }) do
+for _, k in ipairs({ "view", "follow", "watch", "me", "go", "auto", "cam", "invis", "shot", "dismount", "gm", "settings", "obs" }) do
 	ICONS[k] = ICON_DIR .. k
 end
 
@@ -763,8 +736,7 @@ local function BuildFrame()
 	MakeDraggable(frame, "pos", "RIGHT", -40, 0)
 	frame:SetScript("OnUpdate", OnUpdate)
 	frame:SetScript("OnEvent", OnPanelEvent)
-	for _, ev in ipairs({ "UI_ERROR_MESSAGE", "CHAT_MSG_SYSTEM", "PLAYER_TARGET_CHANGED", "UPDATE_MOUSEOVER_UNIT",
-		"UNIT_HEALTH", "UNIT_MAXHEALTH", "UNIT_MANA", "UNIT_RAGE", "UNIT_ENERGY", "UNIT_DISPLAYPOWER" }) do
+	for _, ev in ipairs({ "UI_ERROR_MESSAGE", "CHAT_MSG_SYSTEM", "PLAYER_TARGET_CHANGED", "UPDATE_MOUSEOVER_UNIT" }) do
 		frame:RegisterEvent(ev)
 	end
 
@@ -788,6 +760,27 @@ local function BuildFrame()
 		GameTooltip:Show()
 	end)
 	gear:SetScript("OnLeave", function() GameTooltip:Hide() end)
+
+	-- Observe panel toggle, top left: the docked panel with the viewed agent's bars, casts,
+	-- cooldowns and auras.
+	local obsBtn = CreateFrame("Button", "AgentCamObsButton", frame)
+	obsBtn:SetWidth(16)
+	obsBtn:SetHeight(16)
+	obsBtn:SetPoint("TOPLEFT", frame, "TOPLEFT", 7, -6)
+	obsBtn.icon = obsBtn:CreateTexture(nil, "ARTWORK")
+	obsBtn.icon:SetAllPoints(obsBtn)
+	obsBtn.icon:SetTexture(ICONS.obs)
+	obsBtn:SetHighlightTexture("Interface\\Buttons\\ButtonHilight-Square")
+	obsBtn:GetHighlightTexture():SetBlendMode("ADD")
+	obsBtn:SetScript("OnClick", function() if AgentCamObs_Toggle then AgentCamObs_Toggle() end end)
+	obsBtn:SetScript("OnEnter", function()
+		GameTooltip:SetOwner(this, "ANCHOR_LEFT")
+		GameTooltip:SetText("Observe panel")
+		GameTooltip:AddLine("The viewed agent: health, power, experience, casts, cooldowns, buffs, its group.", 1, 1, 1, 1)
+		GameTooltip:AddLine("/ac obs", 0.5, 0.8, 1)
+		GameTooltip:Show()
+	end)
+	obsBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
 
 	-- Minimize: fold the panel to its title bar (saved), its top-left corner held where it is.
 	local mini = CreateFrame("Button", "AgentCamMinimize", frame)
@@ -819,16 +812,24 @@ local function BuildFrame()
 		local row = CreateFrame("Frame", "AgentCamRow" .. i, frame)
 		row:SetWidth(inner)
 		row:SetHeight(20)
-		local b = CreateFrame("Button", "AgentCamButton" .. i, row, "UIPanelButtonTemplate")
+		-- The name: flat text on a faint strip (no red button), the quest log's highlight on hover
+		-- and, locked, on the agent being viewed.
+		local b = CreateFrame("Button", "AgentCamButton" .. i, row)
 		b:SetWidth(nameW)
 		b:SetHeight(20)
 		b:SetPoint("TOPLEFT", row, "TOPLEFT", 0, 0)
 		b:SetScript("OnClick", function() AgentCam_Switch(this:GetParent().slot) end)
-		local label = getglobal("AgentCamButton" .. i .. "Text")
-		label:ClearAllPoints()
-		label:SetPoint("LEFT", b, "LEFT", 9, 1)
-		label:SetPoint("RIGHT", b, "RIGHT", -6, 1)
+		local strip = b:CreateTexture(nil, "BACKGROUND")
+		strip:SetAllPoints(b)
+		strip:SetTexture(1, 1, 1, 0.06)
+		local label = b:CreateFontString("AgentCamButton" .. i .. "Text", "OVERLAY", "GameFontNormal")
+		label:SetPoint("LEFT", b, "LEFT", 4, 0)
+		label:SetPoint("RIGHT", b, "RIGHT", -2, 0)
 		label:SetJustifyH("LEFT")
+		label:SetHeight(14)
+		b:SetFontString(label)
+		b:SetHighlightTexture("Interface\\QuestFrame\\UI-QuestTitleHighlight")
+		b:GetHighlightTexture():SetBlendMode("ADD")
 		row.name = b
 		b:SetScript("OnEnter", function()
 			local slot = this:GetParent().slot
@@ -837,13 +838,17 @@ local function BuildFrame()
 			GameTooltip:SetText(db.names[slot] or "?")
 			if st then
 				local power = ({ [0] = "Mana", [1] = "Rage", [3] = "Energy" })[st.ptype] or "Power"
-				GameTooltip:AddLine("HP " .. st.hp .. " / " .. st.hpMax .. (st.dead and "  (dead)" or ""), 0.4, 1, 0.4)
+				GameTooltip:AddLine("HP " .. st.hp .. " / " .. st.hpMax .. (st.dead and "  (dead)" or "") .. (st.offline and "  (offline)" or ""), 0.4, 1, 0.4)
 				if st.mpMax and st.mpMax > 0 then
 					GameTooltip:AddLine(power .. " " .. st.mp .. " / " .. st.mpMax, 0.5, 0.7, 1)
 				end
+				local x = xps[Lower(db.names[slot])]
+				if x then
+					GameTooltip:AddLine(string.format("XP %d / %d (%d%%)", x.xp, x.xpMax, math.floor(100 * x.xp / x.xpMax)), 0.75, 0.5, 1)
+				end
 				GameTooltip:AddLine("seen " .. math.floor(GetTime() - st.t) .. "s ago", 0.7, 0.7, 0.7)
 			else
-				GameTooltip:AddLine("not seen yet: target it or view it", 0.7, 0.7, 0.7)
+				GameTooltip:AddLine("no server data yet (WOWOBS)", 0.7, 0.7, 0.7)
 			end
 			GameTooltip:Show()
 		end)
@@ -856,9 +861,16 @@ local function BuildFrame()
 			local bg = bar:CreateTexture(nil, "BACKGROUND")
 			bg:SetAllPoints(bar)
 			bg:SetTexture(0, 0, 0, 0.6)
+			-- the value on the bar, small and outlined so it reads over any colour
+			bar.text = bar:CreateFontString(nil, "OVERLAY")
+			bar.text:SetFont("Fonts\\ARIALN.TTF", h + 1, "OUTLINE")
+			bar.text:SetPoint("CENTER", bar, "CENTER", 0, 0)
 			return bar
 		end
-		row.hp, row.mp = Bar(9), Bar(7)
+		-- health over power over experience (the last only with server data)
+		row.hp, row.mp, row.xp = Bar(9), Bar(7), Bar(3)
+		row.xp.text:Hide()
+		row.xp:SetStatusBarColor(0.6, 0.3, 0.9)
 		row.class = row:CreateTexture(nil, "ARTWORK")
 		row.class:SetWidth(18)
 		row.class:SetHeight(18)
@@ -883,7 +895,7 @@ local function BuildFrame()
 	tools = CreateFrame("Frame", nil, frame)
 	tools:SetWidth(W)
 	tools:SetHeight(ICON + 4)
-	local gap = (inner - 7 * ICON) / 6
+	local gap = (inner - 6 * ICON) / 5
 	local function Col(k) return PAD + (k - 1) * (ICON + gap) end
 	IconButton("AgentCamButtonMe", Col(1), 0, ICONS.me, "Back to me", "Return the camera to your own body.",
 		"Alt-0", AgentCam_Reset)
@@ -892,14 +904,12 @@ local function BuildFrame()
 		"Alt-A", function() AgentCam_ToggleAuto() end, true)
 	frame.camButton = IconButton("AgentCamCam", Col(3), 0, ICONS.cam, "Far camera",
 		"Let the camera zoom out to 50 yards.", "Alt-C", AgentCam_ToggleCamera, true)
-	frame.invisButton = IconButton("AgentCamInvis", Col(4), 0, ICONS.invis, "GM invisibility",
-		"Lit: players cannot see you (.gm visible off). Grey: you are visible.", "Alt-V", AgentCam_ToggleInvis, true)
-	frame.gmButton = IconButton("AgentCamGM", Col(5), 0, ICONS.gm, "GM mode",
-		"Lit: GM mode on (.gm on). Grey: off, a normal player that monsters can attack.", "Alt-H",
-		AgentCam_ToggleGM, true)
-	IconButton("AgentCamShot", Col(6), 0, ICONS.shot, "Screenshot",
+	frame.gmButton = IconButton("AgentCamGM", Col(4), 0, ICONS.gm, "GM mode + invisibility",
+		"Lit: GM mode on and invisible (.gm on, .gm visible off). Grey: both off, a visible normal player that monsters can attack. One click switches both.",
+		"Alt-H / Alt-V", AgentCam_ToggleGMInvis, true)
+	IconButton("AgentCamShot", Col(5), 0, ICONS.shot, "Screenshot",
 		"Print time, agent and zone to chat, then take a screenshot.", "Alt-S", AgentCam_Screenshot)
-	IconButton("AgentCamDismount", Col(7), 0, ICONS.dismount, "Dismount", "Send .dismount.", nil,
+	IconButton("AgentCamDismount", Col(6), 0, ICONS.dismount, "Dismount", "Send .dismount.", nil,
 		function() Cmd(".dismount") end)
 
 	frame.statusText = frame:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
@@ -907,9 +917,9 @@ local function BuildFrame()
 
 	-- Width: fitted to the longest name, or the width the grip was dragged to (db.width); never
 	-- narrower than the tool row. A hidden string measures the names in the buttons' font.
-	local MIN_W = 2 * PAD + 7 * ICON + 6 * 2
+	local MIN_W = 2 * PAD + 6 * ICON + 5 * 2
 	local ICONS_W = table.getn(ROW_ACTIONS) * (RI + 2)
-	local BAR_W = 56
+	local BAR_W = 96
 	local CLASS_W = 20
 	local function BarsW() return (db.bars ~= false) and (CLASS_W + BAR_W + 3) or 0 end
 	local measure = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
@@ -920,7 +930,7 @@ local function BuildFrame()
 			measure:SetText(i .. ". " .. db.names[list[i]])
 			widest = math.max(widest, measure:GetStringWidth())
 		end
-		return math.max(MIN_W, math.ceil(2 * PAD + widest + 15 + 2 + BarsW() + ICONS_W))
+		return math.max(MIN_W, math.ceil(2 * PAD + widest + 8 + 2 + BarsW() + ICONS_W))
 	end
 	-- Rows, name buttons and their icons follow the panel's width.
 	local function LayoutRows(w)
@@ -937,16 +947,20 @@ local function BuildFrame()
 			if bw > 0 then
 				row.class:SetPoint("TOPLEFT", row, "TOPLEFT", nw + 2, -1)
 				row.class:Show()
-				row.hp:SetPoint("TOPLEFT", row, "TOPLEFT", nw + 2 + CLASS_W, -2)
+				row.hp:SetPoint("TOPLEFT", row, "TOPLEFT", nw + 2 + CLASS_W, -1)
 				row.hp:SetWidth(BAR_W)
 				row.mp:SetPoint("TOPLEFT", row.hp, "BOTTOMLEFT", 0, -1)
 				row.mp:SetWidth(BAR_W)
+				row.xp:ClearAllPoints()
+				row.xp:SetPoint("TOPLEFT", row.mp, "BOTTOMLEFT", 0, 0)
+				row.xp:SetWidth(BAR_W)
 				row.hp:Show()
 				row.mp:Show()
 			else
 				row.class:Hide()
 				row.hp:Hide()
 				row.mp:Hide()
+				row.xp:Hide()
 			end
 			local k = 0
 			for _, a in ipairs(ROW_ACTIONS) do
@@ -1038,14 +1052,27 @@ local function BuildFrame()
 				local c = POWER_COLOR[st.ptype] or POWER_COLOR[0]
 				row.mp:SetStatusBarColor(c[1], c[2], c[3])
 				row.mp:SetValue((st.mpMax and st.mpMax > 0) and st.mp / st.mpMax or 0)
-				local a = (now - st.t > STALE) and 0.45 or 1
+				row.hp.text:SetText(st.dead and "dead" or (st.hp .. " / " .. st.hpMax))
+				row.mp.text:SetText((st.mpMax and st.mpMax > 0) and (st.mp .. " / " .. st.mpMax) or "")
+				-- dimmed when stale or offline (the server's last U before it unsubscribes the agent)
+				local a = (st.offline or now - st.t > STALE) and 0.45 or 1
 				row.hp:SetAlpha(a)
 				row.mp:SetAlpha(a)
+				row.xp:SetAlpha(a)
 			else
 				row.hp:SetValue(0)
 				row.mp:SetValue(0)
+				row.hp.text:SetText("")
+				row.mp.text:SetText("")
 				row.hp:SetAlpha(0.45)
 				row.mp:SetAlpha(0.45)
+			end
+			local x = key and xps[key]
+			if x then
+				row.xp:SetValue(x.xp / x.xpMax)
+				row.xp:Show()
+			else
+				row.xp:Hide()
 			end
 		end
 	end
@@ -1118,6 +1145,10 @@ local function BuildFrame()
 	UpdateButtons()
 end
 
+function AgentCam_Collapsed()
+	return db and db.collapsed and true or false
+end
+
 function AgentCam_ToggleCollapsed()
 	if not frame then return end
 	-- Re-anchor at the current top-left first, so the height change grows/shrinks downward.
@@ -1128,6 +1159,7 @@ function AgentCam_ToggleCollapsed()
 		db.pos = { point = "TOPLEFT", relPoint = "BOTTOMLEFT", x = left, y = top }
 	end
 	db.collapsed = not db.collapsed or nil
+	if db.collapsed and AgentCamObs then AgentCamObs:Hide() end -- folds with it; reopens on unfold
 	UpdateButtons()
 end
 
@@ -1198,8 +1230,8 @@ function AgentCam_RefreshConfig()
 	config.info:SetChecked(db.info)
 	config.cam:SetChecked(db.farCam)
 	config.panel:SetChecked(not db.hidden)
+	config.obsBg:SetValue(AgentCamObs_GetBg and math.floor(AgentCamObs_GetBg() * 100 + 0.5) or 75)
 	config.bars:SetChecked(db.bars ~= false)
-	config.scan:SetChecked(db.scan ~= false)
 end
 
 local function SaveName()
@@ -1215,7 +1247,7 @@ end
 local function BuildConfig()
 	config = CreateFrame("Frame", "AgentCamConfig", UIParent)
 	config:SetWidth(400)
-	config:SetHeight(644)
+	config:SetHeight(668)
 	config:SetFrameStrata("DIALOG")
 	config:SetPoint("CENTER", UIParent, "CENTER", 0, 0)
 	config:SetBackdrop({
@@ -1346,9 +1378,23 @@ local function BuildConfig()
 		db.bars = this:GetChecked() and true or false
 		UpdateButtons()
 	end)
-	config.scan = Check("AgentCamConfigScan", 26, -604, "Fast status: read nearby agents by targeting them briefly", function()
-		db.scan = this:GetChecked() and true or false
+	-- Observe panel background opacity, 0 (fully transparent, no border) to 100 %
+	local bs = CreateFrame("Slider", "AgentCamConfigObsBg", config, "OptionsSliderTemplate")
+	bs:SetWidth(200)
+	bs:SetHeight(16)
+	bs:SetPoint("TOPLEFT", config, "TOPLEFT", 60, -622)
+	bs:SetMinMaxValues(0, 100)
+	bs:SetValueStep(5)
+	getglobal("AgentCamConfigObsBgLow"):SetText("0%")
+	getglobal("AgentCamConfigObsBgHigh"):SetText("100%")
+	bs:SetScript("OnValueChanged", function()
+		local v = math.floor(this:GetValue() + 0.5)
+		getglobal("AgentCamConfigObsBgText"):SetText("Observe panel background " .. v .. "%" .. (v == 0 and " (transparent)" or ""))
+		if AgentCamObs_SetBg and AgentCamObs_GetBg and math.floor(AgentCamObs_GetBg() * 100 + 0.5) ~= v then
+			AgentCamObs_SetBg(v / 100)
+		end
 	end)
+	config.obsBg = bs
 	config.panel = Check("AgentCamConfigPanel", 26, -556, "Show panel", function()
 		if this:GetChecked() then db.hidden = nil; frame:Show() else db.hidden = true; frame:Hide() end
 	end)
@@ -1359,7 +1405,7 @@ local function BuildConfig()
 	keys:SetText("Bind Alt keys")
 	keys:SetScript("OnClick", BindDefaultKeys)
 
-	config.controls = { config.auto, config.slider, config.info, config.cam, config.panel, config.bars, config.scan, keys }
+	config.controls = { config.auto, config.slider, config.info, config.cam, config.panel, config.bars, config.obsBg, keys }
 	for i = 1, MAX_AGENTS do
 		table.insert(config.controls, config.names[i])
 		table.insert(config.controls, config.checks[i])
@@ -1410,7 +1456,8 @@ local function Help()
 	Print("/ac <n> | next | prev | me          -- switch to panel agent n (right-click = teleport)")
 	Print("/ac mode view|follow|watch          -- eyes / free follow / .watch")
 	Print("/ac go [n|Name]                     -- teleport to panel agent n, any player, or your target")
-	Print("/ac auto [secs] | cam | invis | gm | shot | info -- director, far camera, visibility, GM mode, screenshot, overlay")
+	Print("/ac auto [secs] | cam | gm | shot | info -- director, far camera, GM mode + invisibility, screenshot, overlay")
+	Print("/ac obs [Name|auto|dock|bg 0-100] -- observe panel: cast, casts, cooldowns, auras; drag it anywhere, dock puts it back, bg sets its background opacity")
 	Print("/ac config | enable | disable | set <slot> <Name> | all | none | list | keys | show | hide")
 end
 
@@ -1443,12 +1490,12 @@ SlashCmdList["AGENTCAM"] = function(msg)
 		AgentCam_ToggleAuto(rest)
 	elseif cmd == "cam" then
 		AgentCam_ToggleCamera()
-	elseif cmd == "invis" then
-		AgentCam_ToggleInvis()
-	elseif cmd == "gm" then
-		AgentCam_ToggleGM()
+	elseif cmd == "invis" or cmd == "gm" then
+		AgentCam_ToggleGMInvis()
 	elseif cmd == "shot" then
 		AgentCam_Screenshot()
+	elseif cmd == "obs" then
+		if AgentCamObs_Toggle then AgentCamObs_Toggle(rest) end
 	elseif cmd == "info" then
 		db.info = not db.info
 		Print(db.info and "info overlay on" or "info overlay off")

@@ -11,7 +11,8 @@
 	<Binding name="AGENTCAM_AUTO">AgentCam_ToggleAuto()</Binding>
 	<Binding name="AGENTCAM_GOTARGET">AgentCam_Go()</Binding>
 	<Binding name="AGENTCAM_CAM">AgentCam_ToggleCamera()</Binding>
-	<Binding name="AGENTCAM_INVIS">AgentCam_ToggleInvis()</Binding>
-	<Binding name="AGENTCAM_GM">AgentCam_ToggleGM()</Binding>
+	<Binding name="AGENTCAM_INVIS">AgentCam_ToggleGMInvis()</Binding>
+	<Binding name="AGENTCAM_GM">AgentCam_ToggleGMInvis()</Binding>
 	<Binding name="AGENTCAM_SHOT">AgentCam_Screenshot()</Binding>
+	<Binding name="AGENTCAM_OBS">AgentCamObs_Toggle()</Binding>
 </Bindings>
