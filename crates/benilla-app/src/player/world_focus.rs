@@ -88,14 +88,14 @@ pub(super) fn publish_view_focus(
         .as_deref()
         .map_or(0, |p| p.reloads)
         .wrapping_add(cinematic.as_deref().map_or(0, |c| c.reloads()));
-    // Phase 1 spectator streaming (opt-in, WOW_SPECTATE_STREAM): while the view is "out" on another
-    // unit through far sight, stream around the SUBJECT, not our parked body, so its ground and
-    // buildings load without `.appear`. Same-map only for now — the subject's map is the map we are
-    // on; following the subject across a map/instance boundary is a later phase (needs the server to
-    // replicate the subject on the new map). The subject's pose is the one `publish_view_subject`
-    // already resolves for the camera rig (a one-frame lag into the stream focus is harmless).
+    // Spectator streaming: while the view is "out" on another unit through far sight, stream around the
+    // SUBJECT, not our parked body, so its ground and buildings load without `.appear`. The subject's
+    // pose is the one `publish_view_subject` already resolves for the camera rig (a one-frame lag into
+    // the stream focus is harmless). ON by default — it only changes anything while far sight is engaged
+    // (inert in normal play), and pairs with the always-on own-avatar hide. Set WOW_SPECTATE_STREAM=0 to
+    // opt out (a kill switch for the old body-centred behaviour).
     let spectating = *spectate_flag.get_or_insert_with(|| {
-        std::env::var("WOW_SPECTATE_STREAM").is_ok_and(|v| v != "0")
+        std::env::var("WOW_SPECTATE_STREAM").map_or(true, |v| v != "0")
     });
     if spectating {
         if let (Some(fs), Some(vs)) = (far_sight.as_deref(), view_subject.as_deref()) {
