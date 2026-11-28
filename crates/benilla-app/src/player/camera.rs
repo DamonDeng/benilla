@@ -1529,6 +1529,15 @@ pub(super) fn seat_on_subject(
         follow,
         dynamics,
     );
+
+    // Viewing another unit through far sight (a spectator's `.watch`, a possession): our own body is
+    // co-located with — or beside — the subject, and the client always draws our own avatar, so it
+    // would stand in frame next to the one we are watching. Hide it, overriding seat_camera's
+    // distance-based fade; when far sight ends (`view.remote` None) the normal fade restores it.
+    if view.remote.is_some() {
+        rig.self_fade_alpha = 0.0;
+        rig.own_model_hidden = true;
+    }
 }
 
 /// Seat the third-person camera: orient it, sweep the arm from `head` toward the ideal seat
